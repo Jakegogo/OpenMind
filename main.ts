@@ -150,6 +150,47 @@ class MindmapView extends ItemView {
   private prevViewport: { nodesTransform: string | null; canvasTransform: string | null } | null = null;
   private allowCenterRoot: boolean = false;
   private centerRootWrapped: boolean = false;
+  private addButtonEl: HTMLButtonElement | null = null;
+  private addButtonForNodeId: string | null = null;
+  private addButtonRAF: number | null = null;
+  private revealTimeoutId: number | null = null;
+  private lastDblClickAtMs: number = 0;
+  private deleteButtonEl: HTMLButtonElement | null = null;
+  private suppressProgrammaticNodeUpdate: boolean = false;
+  private getJsMindEventName(type: any, data: any): string {
+    try {
+      if (typeof type === 'string') return type;
+      if (data && typeof data.evt === 'string') return data.evt;
+    } catch {}
+    return '';
+  }
+  private getEventNodeId(data: any): string {
+    try {
+      if (!data) return '';
+      if (typeof data.node === 'string') return data.node as string;
+      if (data.node && typeof data.node.id === 'string') return data.node.id as string;
+      if (Array.isArray(data.data) && typeof data.data[0] === 'string') return data.data[0] as string;
+      if (typeof data.id === 'string') return data.id as string;
+    } catch {}
+    return '';
+  }
+  private getEventNodeTopic(data: any): string {
+    try {
+      if (!data) return '';
+      if (typeof data.topic === 'string') return data.topic as string;
+      if (data.node && typeof (data.node as any).topic === 'string') return (data.node as any).topic as string;
+      if (Array.isArray(data.data) && typeof data.data[1] === 'string') return data.data[1] as string;
+    } catch {}
+    return '';
+  }
+  private isMindmapEditingActive(): boolean {
+    try {
+      if (!this.containerElDiv) return false;
+      const root = this.containerElDiv.querySelector('.jsmind-inner') || this.containerElDiv;
+      if (!root) return false;
+      return !!(root.querySelector('input, textarea, [contenteditable="true"]'));
+    } catch { return false; }
+  }
 
   constructor(leaf: WorkspaceLeaf, plugin: MindmapPlugin) {
     super(leaf);
@@ -172,9 +213,6 @@ class MindmapView extends ItemView {
     this.contentEl.style.height = '100%';
     ;(this.containerEl as HTMLElement).style.height = '100%';
     const toolbar = this.contentEl.createDiv({ cls: 'mm-toolbar' });
-    const addChildBtn = toolbar.createEl('button', { text: 'Add Child' });
-    const renameBtn = toolbar.createEl('button', { text: 'Rename' });
-    const deleteBtn = toolbar.createEl('button', { text: 'Delete' });
     const refreshBtn = toolbar.createEl('button', { text: 'Refresh' });
 
     const container = this.contentEl.createDiv();
@@ -183,11 +221,8 @@ class MindmapView extends ItemView {
     container.style.flex = '1 1 auto';
     container.style.height = '100%';
     container.style.minHeight = '400px';
+    container.style.position = 'relative';
     this.containerElDiv = container;
-
-    addChildBtn.addEventListener('click', () => this.handleAddChild());
-    renameBtn.addEventListener('click', () => this.handleRename());
-    deleteBtn.addEventListener('click', () => this.handleDelete());
     refreshBtn.addEventListener('click', () => this.refresh());
 
     try {
@@ -210,6 +245,7 @@ class MindmapView extends ItemView {
         if (this.jm) {
           try { this.jm.resize && this.jm.resize(); } catch {}
         }
+        this.updateAddButtonPosition();
       });
       if (this.containerElDiv) ro.observe(this.containerElDiv);
       this.register(() => ro.disconnect());
@@ -342,6 +378,10 @@ class MindmapView extends ItemView {
       if (!active) return;
       this.file = active;
     }
+    // Stop and clear floating buttons before rebuilding DOM
+    this.hideAddButton();
+    this.addButtonEl = null;
+    this.deleteButtonEl = null;
     // Capture viewport (transform) and selection before rebuild
     const prevSelectedId = (() => {
       try { return this.jm?.get_selected_node?.()?.id ?? null; } catch { return null; }
@@ -354,20 +394,21 @@ class MindmapView extends ItemView {
     if (!this.containerElDiv || !window.jsMind) return;
     this.containerElDiv.empty();
     this.containerElDiv.id = 'jsmind_container';
-    const options = { container: 'jsmind_container', theme: 'primary', editable: true };
+    const options = { container: 'jsmind_container', theme: 'info', editable: true, model: 'side', view: { engine: 'svg' ,expander_style: 'number', draggable: false }};
     // Ensure root node style matches themed nodes instead of white
-    try {
-      const overrideId = 'jsmind-theme-override';
-      if (!document.getElementById(overrideId)) {
-        const style = document.createElement('style');
-        style.id = overrideId;
-        style.textContent = `
-/* Make root node adopt theme colors instead of white */
-.theme-primary jmnode.root { background: #e8f2ff !important; border-color: #90c2ff !important; color: #0b3d91 !important; }
-`;
-        document.head.appendChild(style);
-      }
-    } catch {}
+//     try {
+//       const overrideId = 'jsmind-theme-override';
+//       if (!document.getElementById(overrideId)) {
+//         const style = document.createElement('style');
+//         style.id = overrideId;
+//         style.textContent = `
+// /* Make root node adopt theme colors instead of white */
+// .theme-primary jmnode.root { background: #e8f2ff !important; border-color: #90c2ff !important; color: #0b3d91 !important; }
+// `;
+//         document.head.appendChild(style);
+//       }
+//     } catch {}
+
     this.jm = new window.jsMind(options);
     // Wrap center_root so plugin can decide whether to allow auto-centering root
     this.wrapCenterRootIfNeeded();
@@ -391,14 +432,36 @@ class MindmapView extends ItemView {
     try {
       const attachSelectionSync = () => {
         if (this.jm && typeof this.jm.add_event_listener === 'function') {
-          this.jm.add_event_listener((type: string, data: any) => {
-            if (type === 'select_node' && data?.node?.id) {
+          this.jm.add_event_listener((type: any, data: any) => {
+            const evt = this.getJsMindEventName(type, data);
+            const nodeIdFromEvent = this.getEventNodeId(data);
+            if (evt === 'select_node' && nodeIdFromEvent) {
+              if (this.isMindmapEditingActive()) return;
               if (this.suppressSync) return;
-              // Manual click: only reveal editor, do NOT auto-center mindmap
-              this.lastSyncedNodeId = data.node.id;
-              this.suppressEditorSyncUntil = Date.now() + 600;
-              this.revealHeadingById(data.node.id);
+              // Debounce single-click to not block double-click editing in jsMind
+              if (Date.now() - this.lastDblClickAtMs < 350) return;
+              if (this.revealTimeoutId != null) window.clearTimeout(this.revealTimeoutId);
+              const nodeId = nodeIdFromEvent;
+              this.revealTimeoutId = window.setTimeout(() => {
+                this.lastSyncedNodeId = nodeId;
+                this.suppressEditorSyncUntil = Date.now() + 600;
+                this.revealHeadingById(nodeId);
+                this.showAddButton(nodeId);
+                this.revealTimeoutId = null;
+              }, 200);
             }
+            // Some builds of jsMind emit 'edit' on inline rename; also try 'update_node' as fallback
+            if ((evt === 'edit' || evt === 'update_node' || evt === 'nodechanged' || evt === 'topic_change' || evt === 'textedit') && nodeIdFromEvent) {
+              if (this.suppressProgrammaticNodeUpdate) return;
+              if (!this.isMindmapEditingActive() && evt !== 'update_node') return;
+              const nodeId = nodeIdFromEvent;
+              const newTitle: string = this.getEventNodeTopic(data).toString();
+              this.renameHeadingInFile(nodeId, newTitle).catch(() => {});
+            }
+            if (evt === 'select_clear') {
+              this.hideAddButton();
+            }
+            console.log('event', { type, evt, nodeId: nodeIdFromEvent, topic: this.getEventNodeTopic(data) });
           });
         }
         if (this.containerElDiv) {
@@ -408,13 +471,32 @@ class MindmapView extends ItemView {
             const nodeEl = t && (t.closest ? t.closest('jmnode') : null);
             const nodeId = nodeEl?.getAttribute('nodeid') || '';
             if (nodeId) {
-              this.lastSyncedNodeId = nodeId;
-              this.suppressEditorSyncUntil = Date.now() + 600;
-              this.revealHeadingById(nodeId);
+              if (this.isMindmapEditingActive()) return;
+              // Debounce click similarly to not interfere double-click
+              if (this.revealTimeoutId != null) window.clearTimeout(this.revealTimeoutId);
+              this.revealTimeoutId = window.setTimeout(() => {
+                // if a dblclick just happened, skip
+                if (Date.now() - this.lastDblClickAtMs < 350) return;
+                this.lastSyncedNodeId = nodeId;
+                this.suppressEditorSyncUntil = Date.now() + 600;
+                this.revealHeadingById(nodeId);
+                this.showAddButton(nodeId);
+                this.revealTimeoutId = null;
+              }, 200);
             }
           };
           nodesContainer.addEventListener('click', handler);
+          const dblHandler = (_ev: Event) => {
+            this.lastDblClickAtMs = Date.now();
+            if (this.revealTimeoutId != null) {
+              window.clearTimeout(this.revealTimeoutId);
+              this.revealTimeoutId = null;
+            }
+            // Allow jsMind to enter edit mode without stealing focus to editor
+          };
+          nodesContainer.addEventListener('dblclick', dblHandler);
           this.register(() => nodesContainer && nodesContainer.removeEventListener('click', handler));
+          this.register(() => nodesContainer && nodesContainer.removeEventListener('dblclick', dblHandler));
         }
       };
       attachSelectionSync();
@@ -459,12 +541,12 @@ class MindmapView extends ItemView {
       if (!existed) {
         // add under its computed parent
         const parentKey = newH.parentId ?? (firstNextH1 ? firstNextH1.id : rootId);
-        try { this.jm.add_node(parentKey, newH.id, newH.title || ''); } catch {}
+        try { this.jm.add_node(parentKey, newH.id, (newH.title && newH.title.trim()) ? newH.title : '新标题'); } catch {}
         continue;
       }
       // update title if changed
       if (existed.title !== newH.title) {
-        try { this.jm.update_node(newH.id, newH.title || ''); } catch {}
+        try { this.jm.update_node(newH.id, (newH.title && newH.title.trim()) ? newH.title : '新标题'); } catch {}
       }
       // reparent if parent changed
       const oldParent = existed.parentId ?? (firstPrevH1 ? firstPrevH1.id : rootId);
@@ -472,7 +554,7 @@ class MindmapView extends ItemView {
       if (oldParent !== newParent) {
         try {
           this.jm.remove_node(newH.id);
-          this.jm.add_node(newParent, newH.id, newH.title || '');
+          this.jm.add_node(newParent, newH.id, (newH.title && newH.title.trim()) ? newH.title : '新标题');
         } catch {}
       }
     }
@@ -653,10 +735,260 @@ class MindmapView extends ItemView {
       }
     }));
 
+    // Reposition + button on container scroll (when scrollbars visible)
+    if (this.containerElDiv) {
+      const scrollHandler = () => this.updateAddButtonPosition();
+      this.containerElDiv.addEventListener('scroll', scrollHandler);
+      this.register(() => this.containerElDiv && this.containerElDiv.removeEventListener('scroll', scrollHandler));
+    }
+
     // Poll cursor movement (covers pure cursor move without change)
     const id = window.setInterval(() => { trySync(); }, 400);
     this.editorSyncIntervalId = id as unknown as number;
     this.registerInterval(id as unknown as number);
+  }
+
+  private showAddButton(nodeId: string) {
+    try {
+      if (!this.jm || !this.containerElDiv) return;
+      if (this.isMindmapEditingActive()) return;
+      const node = this.jm.get_node?.(nodeId);
+      if (!node || node.isroot) {
+        this.hideAddButton();
+        return;
+      }
+      let btn = this.addButtonEl;
+      if (!btn) {
+        btn = document.createElement('button');
+        btn.textContent = '+';
+        btn.title = 'Add child';
+        btn.style.position = 'absolute';
+        btn.style.zIndex = '5';
+        btn.style.width = '22px';
+        btn.style.height = '22px';
+        btn.style.lineHeight = '22px';
+        btn.style.padding = '0';
+        btn.style.textAlign = 'center';
+        btn.style.boxSizing = 'border-box';
+        btn.style.borderRadius = '11px';
+        btn.style.border = '1px solid #90c2ff';
+        btn.style.background = '#e8f2ff';
+        btn.style.color = '#0b3d91';
+        btn.style.cursor = 'pointer';
+        this.containerElDiv.appendChild(btn);
+        this.addButtonEl = btn;
+      }
+      // If element exists but was removed due to refresh, re-append
+      if (this.addButtonEl && this.addButtonEl.parentElement !== this.containerElDiv) {
+        this.containerElDiv.appendChild(this.addButtonEl);
+      }
+      // Always bind to current nodeId (overwrite previous handler)
+      this.addButtonEl!.onclick = (e) => { e.stopPropagation(); this.addChildUnder(nodeId); };
+      // create delete button alongside
+      if (!this.deleteButtonEl) {
+        const del = document.createElement('button');
+        del.textContent = '−';
+        del.title = 'Delete node';
+        del.style.position = 'absolute';
+        del.style.zIndex = '5';
+        del.style.width = '22px';
+        del.style.height = '22px';
+        del.style.lineHeight = '22px';
+        del.style.padding = '0';
+        del.style.textAlign = 'center';
+        del.style.boxSizing = 'border-box';
+        del.style.borderRadius = '11px';
+        del.style.border = '1px solid #ff9aa2';
+        del.style.background = '#ffecef';
+        del.style.color = '#cc0033';
+        del.style.cursor = 'pointer';
+        this.containerElDiv.appendChild(del);
+        this.deleteButtonEl = del;
+      }
+      if (this.deleteButtonEl && this.deleteButtonEl.parentElement !== this.containerElDiv) {
+        this.containerElDiv.appendChild(this.deleteButtonEl);
+      }
+      // Always bind to current nodeId
+      this.deleteButtonEl!.onclick = (e) => { e.stopPropagation(); this.deleteHeadingById(nodeId); };
+      this.addButtonForNodeId = nodeId;
+      this.updateAddButtonPosition();
+      // start RAF loop to follow transforms while visible
+      if (this.addButtonRAF == null) {
+        const tick = () => {
+          this.updateAddButtonPosition();
+          if (this.addButtonEl && this.addButtonEl.style.display !== 'none') {
+            this.addButtonRAF = window.requestAnimationFrame(tick);
+          } else {
+            if (this.addButtonRAF != null) {
+              window.cancelAnimationFrame(this.addButtonRAF);
+              this.addButtonRAF = null;
+            }
+          }
+        };
+        this.addButtonRAF = window.requestAnimationFrame(tick);
+      }
+    } catch {}
+  }
+
+  private hideAddButton() {
+    if (this.addButtonEl) {
+      this.addButtonEl.style.display = 'none';
+      this.addButtonForNodeId = null;
+      if (this.addButtonRAF != null) {
+        try { window.cancelAnimationFrame(this.addButtonRAF); } catch {}
+        this.addButtonRAF = null;
+      }
+    }
+    if (this.deleteButtonEl) {
+      this.deleteButtonEl.style.display = 'none';
+    }
+  }
+
+  private async addChildUnder(nodeId: string) {
+    if (!this.file) return;
+    const content = await this.app.vault.read(this.file);
+    const headings = computeHeadingSections(content);
+    const parent = headings.find(h => h.id === nodeId) ?? null;
+    let levelToInsert = 1;
+    let insertPos = content.length;
+    if (parent) {
+      levelToInsert = Math.min(parent.level + 1, 6);
+      // Always append at the end of the parent's section (after its entire content block)
+      insertPos = Math.min(parent.end + 1, content.length);
+    }
+    const headingPrefix = '#'.repeat(levelToInsert);
+    const needLeadingNewline = insertPos > 0 && content.charAt(insertPos - 1) !== '\n';
+    // Use placeholder title to satisfy jsMind's non-empty topic requirement
+    const placeholder = '新标题';
+    const insertText = `${needLeadingNewline ? '\n' : ''}${headingPrefix} ${placeholder}\n`;
+    const updated = content.slice(0, insertPos) + insertText + content.slice(insertPos);
+    await this.app.vault.modify(this.file, updated);
+    new Notice('Child heading inserted');
+    // Immediately focus editor to the inserted placeholder title
+    const newHeadingStart = insertPos + (needLeadingNewline ? 1 : 0);
+    const before = updated.slice(0, newHeadingStart);
+    const newLineIndex = (before.match(/\n/g)?.length ?? 0);
+    const chStart = headingPrefix.length + 1;
+    const chEnd = chStart + placeholder.length;
+    this.focusEditorToRange(newLineIndex, chStart, chEnd);
+    // re-show buttons for current node after document mutation
+    this.showAddButton(nodeId);
+  }
+
+  private focusEditorToRange(line: number, chStart: number, chEnd: number) {
+    try {
+      const mdLeaves = this.app.workspace.getLeavesOfType('markdown');
+      for (const leaf of mdLeaves) {
+        const v = leaf.view as any;
+        if (v?.file?.path === this.file?.path) {
+          const mdView = v as MarkdownView;
+          const editor = mdView.editor;
+          const from = { line, ch: chStart } as any;
+          const to = { line, ch: chEnd } as any;
+          setTimeout(() => {
+            try { this.app.workspace.setActiveLeaf(leaf, { focus: true }); } catch {}
+            try { this.app.workspace.revealLeaf(leaf); } catch {}
+            try { (editor as any).focus?.(); } catch {}
+            try { editor.setSelection(from, to); } catch {}
+            try { (editor as any).scrollIntoView({ from, to }, true); } catch {}
+          }, 0);
+          break;
+        }
+      }
+    } catch {}
+  }
+
+  private updateAddButtonPosition() {
+    try {
+      if (!this.addButtonEl || !this.containerElDiv || !this.addButtonForNodeId) return;
+      const nodeEl = this.containerElDiv.querySelector(`jmnode[nodeid="${this.addButtonForNodeId}"]`) as HTMLElement | null;
+      if (!nodeEl) return;
+      const node = this.jm?.get_node?.(this.addButtonForNodeId);
+      const rect = nodeEl.getBoundingClientRect();
+      const hostRect = this.containerElDiv.getBoundingClientRect();
+      const isLeft = node && (node.direction === (window.jsMind?.direction?.left ?? 'left'));
+      const xAdd = isLeft ? rect.left - hostRect.left - 28 : rect.right - hostRect.left + 6;
+      const btnH = (this.addButtonEl?.offsetHeight || 22);
+      const centerYRaw = rect.top - hostRect.top + (rect.height - btnH) / 2;
+      const centerY = Math.round(centerYRaw) - 3; // nudge up 1px for visual centering
+      this.addButtonEl.style.left = `${xAdd}px`;
+      this.addButtonEl.style.top = `${centerY}px`;
+      this.addButtonEl.style.transform = '';
+      this.addButtonEl.style.display = 'block';
+      if (this.deleteButtonEl) {
+        const gap = 4;
+        const xDel = isLeft ? xAdd - (22 + gap) : xAdd + (22 + gap);
+        this.deleteButtonEl.style.left = `${xDel}px`;
+        this.deleteButtonEl.style.top = `${centerY}px`;
+        this.deleteButtonEl.style.transform = '';
+        this.deleteButtonEl.style.display = 'block';
+      }
+    } catch {}
+  }
+
+  private async deleteHeadingById(nodeId: string) {
+    if (!this.file) return;
+    try {
+      const content = await this.app.vault.read(this.file);
+      const headings = computeHeadingSections(content);
+      const target = headings.find(h => h.id === nodeId);
+      if (!target) return;
+      const start = target.start;
+      const end = Math.min(target.end + 1, content.length);
+      const updated = content.slice(0, start) + content.slice(end);
+      await this.app.vault.modify(this.file, updated);
+      new Notice('Node deleted');
+      // After deletion, try to show buttons on parent if exists
+      const newHeadings = computeHeadingSections(updated);
+      const parentId = target.parentId;
+      if (parentId && newHeadings.find(h => h.id === parentId)) {
+        this.showAddButton(parentId);
+      } else {
+        this.hideAddButton();
+      }
+    } catch {}
+  }
+
+  private async renameHeadingInFile(nodeId: string, nextTitleRaw: string) {
+    if (!this.file) return;
+    const safeTitle = (nextTitleRaw && nextTitleRaw.trim()) ? nextTitleRaw.trim() : '新标题';
+    try {
+      const content = await this.app.vault.read(this.file);
+      const lines = content.split('\n');
+      const headings = computeHeadingSections(content);
+      const target = headings.find(h => h.id === nodeId);
+      if (!target) return;
+      const lineIdx = target.lineStart;
+      if (lineIdx < 0 || lineIdx >= lines.length) return;
+      if (target.style === 'atx') {
+        const original = lines[lineIdx] ?? '';
+        // Preserve leading hashes, whitespace, and any trailing spaces/closing #s
+        const m = original.match(/^(#{1,6})([ \t]+)(.*?)([ \t#]*)$/);
+        if (m) {
+          const leading = m[1] + m[2];
+          const trailing = m[4] ?? '';
+          lines[lineIdx] = `${leading}${safeTitle}${trailing}`;
+        } else {
+          // Fallback: rebuild minimally
+          const hashes = '#'.repeat(Math.min(Math.max(target.level, 1), 6));
+          lines[lineIdx] = `${hashes} ${safeTitle}`;
+        }
+      } else {
+        // setext: change only the title line; underline remains
+        lines[lineIdx] = safeTitle;
+      }
+      const updated = lines.join('\n');
+      this.suppressProgrammaticNodeUpdate = true;
+      await this.app.vault.modify(this.file, updated);
+      // ensure jsMind node shows placeholder if needed
+      if (this.jm && nextTitleRaw.trim().length === 0) {
+        try { this.jm.update_node(nodeId, safeTitle); } catch {}
+      }
+      // release guard shortly after modify finishes
+      window.setTimeout(() => { this.suppressProgrammaticNodeUpdate = false; }, 300);
+    } catch {
+      this.suppressProgrammaticNodeUpdate = false;
+    }
   }
 
   private getSelectedHeading(): HeadingNode | null {
@@ -678,70 +1010,7 @@ class MindmapView extends ItemView {
     return false;
   }
 
-  private async handleAddChild() {
-    if (!this.file) return;
-    const selected = this.getSelectedHeading();
-    const content = await this.app.vault.read(this.file);
-    const headings = computeHeadingSections(content);
-    let parent: HeadingNode | null = selected;
-    if (!parent) {
-      const firstH1 = headings.find(h => h.level === 1) ?? null;
-      parent = firstH1;
-    }
-    let levelToInsert = 1;
-    let insertPos = content.length;
-    if (parent) {
-      levelToInsert = Math.min(parent.level + 1, 6);
-      insertPos = parent.end + 1;
-    }
-    const title = window.prompt('New node title');
-    if (!title) return;
-    const headingPrefix = '#'.repeat(levelToInsert);
-    const prefix = content.endsWith('\n') ? '' : '\n';
-    const insertText = `${prefix}${headingPrefix} ${title}\n`;
-    const updated = content.slice(0, insertPos) + insertText + content.slice(insertPos);
-    await this.app.vault.modify(this.file, updated);
-    new Notice('Child node added');
-  }
 
-  private async handleRename() {
-    if (!this.file) return;
-    const selected = this.getSelectedHeading();
-    if (!selected) {
-      new Notice('Select a node to rename');
-      return;
-    }
-    const content = await this.app.vault.read(this.file);
-    const headings = computeHeadingSections(content);
-    const target = headings.find(h => h.id === selected.id);
-    if (!target) return;
-    const newTitle = window.prompt('New title', target.title);
-    if (!newTitle) return;
-    const headingLine = content.substring(target.start, target.headingTextEnd);
-    const replacedLine = headingLine.replace(/^(#{1,6})\s+.*$/, `$1 ${newTitle}`);
-    const updated = content.slice(0, target.start) + replacedLine + content.slice(target.headingTextEnd);
-    await this.app.vault.modify(this.file, updated);
-    new Notice('Node renamed');
-  }
-
-  private async handleDelete() {
-    if (!this.file) return;
-    const selected = this.getSelectedHeading();
-    if (!selected) {
-      new Notice('Select a node to delete');
-      return;
-    }
-    if (!confirm('Delete this node and its content?')) return;
-    const content = await this.app.vault.read(this.file);
-    const headings = computeHeadingSections(content);
-    const target = headings.find(h => h.id === selected.id);
-    if (!target) return;
-    const start = target.start;
-    const end = Math.min(target.end + 1, content.length);
-    const updated = content.slice(0, start) + content.slice(end);
-    await this.app.vault.modify(this.file, updated);
-    new Notice('Node deleted');
-  }
 }
 
 export default class MindmapPlugin extends Plugin {

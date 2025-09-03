@@ -153,7 +153,53 @@ var MindmapView = class extends import_obsidian.ItemView {
     this.prevViewport = null;
     this.allowCenterRoot = false;
     this.centerRootWrapped = false;
+    this.addButtonEl = null;
+    this.addButtonForNodeId = null;
+    this.addButtonRAF = null;
+    this.revealTimeoutId = null;
+    this.lastDblClickAtMs = 0;
+    this.deleteButtonEl = null;
+    this.suppressProgrammaticNodeUpdate = false;
     this.plugin = plugin;
+  }
+  getJsMindEventName(type, data) {
+    try {
+      if (typeof type === "string") return type;
+      if (data && typeof data.evt === "string") return data.evt;
+    } catch {
+    }
+    return "";
+  }
+  getEventNodeId(data) {
+    try {
+      if (!data) return "";
+      if (typeof data.node === "string") return data.node;
+      if (data.node && typeof data.node.id === "string") return data.node.id;
+      if (Array.isArray(data.data) && typeof data.data[0] === "string") return data.data[0];
+      if (typeof data.id === "string") return data.id;
+    } catch {
+    }
+    return "";
+  }
+  getEventNodeTopic(data) {
+    try {
+      if (!data) return "";
+      if (typeof data.topic === "string") return data.topic;
+      if (data.node && typeof data.node.topic === "string") return data.node.topic;
+      if (Array.isArray(data.data) && typeof data.data[1] === "string") return data.data[1];
+    } catch {
+    }
+    return "";
+  }
+  isMindmapEditingActive() {
+    try {
+      if (!this.containerElDiv) return false;
+      const root = this.containerElDiv.querySelector(".jsmind-inner") || this.containerElDiv;
+      if (!root) return false;
+      return !!root.querySelector('input, textarea, [contenteditable="true"]');
+    } catch {
+      return false;
+    }
   }
   getViewType() {
     return VIEW_TYPE_MINDMAP;
@@ -169,9 +215,6 @@ var MindmapView = class extends import_obsidian.ItemView {
     ;
     this.containerEl.style.height = "100%";
     const toolbar = this.contentEl.createDiv({ cls: "mm-toolbar" });
-    const addChildBtn = toolbar.createEl("button", { text: "Add Child" });
-    const renameBtn = toolbar.createEl("button", { text: "Rename" });
-    const deleteBtn = toolbar.createEl("button", { text: "Delete" });
     const refreshBtn = toolbar.createEl("button", { text: "Refresh" });
     const container = this.contentEl.createDiv();
     container.id = "jsmind_container";
@@ -179,10 +222,8 @@ var MindmapView = class extends import_obsidian.ItemView {
     container.style.flex = "1 1 auto";
     container.style.height = "100%";
     container.style.minHeight = "400px";
+    container.style.position = "relative";
     this.containerElDiv = container;
-    addChildBtn.addEventListener("click", () => this.handleAddChild());
-    renameBtn.addEventListener("click", () => this.handleRename());
-    deleteBtn.addEventListener("click", () => this.handleDelete());
     refreshBtn.addEventListener("click", () => this.refresh());
     try {
       await this.ensureJsMindLoaded();
@@ -204,6 +245,7 @@ var MindmapView = class extends import_obsidian.ItemView {
           } catch {
           }
         }
+        this.updateAddButtonPosition();
       });
       if (this.containerElDiv) ro.observe(this.containerElDiv);
       this.register(() => ro.disconnect());
@@ -320,6 +362,9 @@ var MindmapView = class extends import_obsidian.ItemView {
       if (!active) return;
       this.file = active;
     }
+    this.hideAddButton();
+    this.addButtonEl = null;
+    this.deleteButtonEl = null;
     const prevSelectedId = (() => {
       try {
         return this.jm?.get_selected_node?.()?.id ?? null;
@@ -334,20 +379,7 @@ var MindmapView = class extends import_obsidian.ItemView {
     if (!this.containerElDiv || !window.jsMind) return;
     this.containerElDiv.empty();
     this.containerElDiv.id = "jsmind_container";
-    const options = { container: "jsmind_container", theme: "primary", editable: true };
-    try {
-      const overrideId = "jsmind-theme-override";
-      if (!document.getElementById(overrideId)) {
-        const style = document.createElement("style");
-        style.id = overrideId;
-        style.textContent = `
-/* Make root node adopt theme colors instead of white */
-.theme-primary jmnode.root { background: #e8f2ff !important; border-color: #90c2ff !important; color: #0b3d91 !important; }
-`;
-        document.head.appendChild(style);
-      }
-    } catch {
-    }
+    const options = { container: "jsmind_container", theme: "info", editable: true, model: "side", view: { engine: "svg", expander_style: "number", draggable: false } };
     this.jm = new window.jsMind(options);
     this.wrapCenterRootIfNeeded();
     this.allowCenterRoot = false;
@@ -375,12 +407,34 @@ var MindmapView = class extends import_obsidian.ItemView {
       const attachSelectionSync = () => {
         if (this.jm && typeof this.jm.add_event_listener === "function") {
           this.jm.add_event_listener((type, data) => {
-            if (type === "select_node" && data?.node?.id) {
+            const evt = this.getJsMindEventName(type, data);
+            const nodeIdFromEvent = this.getEventNodeId(data);
+            if (evt === "select_node" && nodeIdFromEvent) {
+              if (this.isMindmapEditingActive()) return;
               if (this.suppressSync) return;
-              this.lastSyncedNodeId = data.node.id;
-              this.suppressEditorSyncUntil = Date.now() + 600;
-              this.revealHeadingById(data.node.id);
+              if (Date.now() - this.lastDblClickAtMs < 350) return;
+              if (this.revealTimeoutId != null) window.clearTimeout(this.revealTimeoutId);
+              const nodeId = nodeIdFromEvent;
+              this.revealTimeoutId = window.setTimeout(() => {
+                this.lastSyncedNodeId = nodeId;
+                this.suppressEditorSyncUntil = Date.now() + 600;
+                this.revealHeadingById(nodeId);
+                this.showAddButton(nodeId);
+                this.revealTimeoutId = null;
+              }, 200);
             }
+            if ((evt === "edit" || evt === "update_node" || evt === "nodechanged" || evt === "topic_change" || evt === "textedit") && nodeIdFromEvent) {
+              if (this.suppressProgrammaticNodeUpdate) return;
+              if (!this.isMindmapEditingActive() && evt !== "update_node") return;
+              const nodeId = nodeIdFromEvent;
+              const newTitle = this.getEventNodeTopic(data).toString();
+              this.renameHeadingInFile(nodeId, newTitle).catch(() => {
+              });
+            }
+            if (evt === "select_clear") {
+              this.hideAddButton();
+            }
+            console.log("event", { type, evt, nodeId: nodeIdFromEvent, topic: this.getEventNodeTopic(data) });
           });
         }
         if (this.containerElDiv) {
@@ -390,13 +444,29 @@ var MindmapView = class extends import_obsidian.ItemView {
             const nodeEl = t && (t.closest ? t.closest("jmnode") : null);
             const nodeId = nodeEl?.getAttribute("nodeid") || "";
             if (nodeId) {
-              this.lastSyncedNodeId = nodeId;
-              this.suppressEditorSyncUntil = Date.now() + 600;
-              this.revealHeadingById(nodeId);
+              if (this.isMindmapEditingActive()) return;
+              if (this.revealTimeoutId != null) window.clearTimeout(this.revealTimeoutId);
+              this.revealTimeoutId = window.setTimeout(() => {
+                if (Date.now() - this.lastDblClickAtMs < 350) return;
+                this.lastSyncedNodeId = nodeId;
+                this.suppressEditorSyncUntil = Date.now() + 600;
+                this.revealHeadingById(nodeId);
+                this.showAddButton(nodeId);
+                this.revealTimeoutId = null;
+              }, 200);
             }
           };
           nodesContainer.addEventListener("click", handler);
+          const dblHandler = (_ev) => {
+            this.lastDblClickAtMs = Date.now();
+            if (this.revealTimeoutId != null) {
+              window.clearTimeout(this.revealTimeoutId);
+              this.revealTimeoutId = null;
+            }
+          };
+          nodesContainer.addEventListener("dblclick", dblHandler);
           this.register(() => nodesContainer && nodesContainer.removeEventListener("click", handler));
+          this.register(() => nodesContainer && nodesContainer.removeEventListener("dblclick", dblHandler));
         }
       };
       attachSelectionSync();
@@ -437,14 +507,14 @@ var MindmapView = class extends import_obsidian.ItemView {
       if (!existed) {
         const parentKey = newH.parentId ?? (firstNextH1 ? firstNextH1.id : rootId);
         try {
-          this.jm.add_node(parentKey, newH.id, newH.title || "");
+          this.jm.add_node(parentKey, newH.id, newH.title && newH.title.trim() ? newH.title : "\u65B0\u6807\u9898");
         } catch {
         }
         continue;
       }
       if (existed.title !== newH.title) {
         try {
-          this.jm.update_node(newH.id, newH.title || "");
+          this.jm.update_node(newH.id, newH.title && newH.title.trim() ? newH.title : "\u65B0\u6807\u9898");
         } catch {
         }
       }
@@ -453,7 +523,7 @@ var MindmapView = class extends import_obsidian.ItemView {
       if (oldParent !== newParent) {
         try {
           this.jm.remove_node(newH.id);
-          this.jm.add_node(newParent, newH.id, newH.title || "");
+          this.jm.add_node(newParent, newH.id, newH.title && newH.title.trim() ? newH.title : "\u65B0\u6807\u9898");
         } catch {
         }
       }
@@ -671,11 +741,271 @@ var MindmapView = class extends import_obsidian.ItemView {
         trySync();
       }
     }));
+    if (this.containerElDiv) {
+      const scrollHandler = () => this.updateAddButtonPosition();
+      this.containerElDiv.addEventListener("scroll", scrollHandler);
+      this.register(() => this.containerElDiv && this.containerElDiv.removeEventListener("scroll", scrollHandler));
+    }
     const id = window.setInterval(() => {
       trySync();
     }, 400);
     this.editorSyncIntervalId = id;
     this.registerInterval(id);
+  }
+  showAddButton(nodeId) {
+    try {
+      if (!this.jm || !this.containerElDiv) return;
+      if (this.isMindmapEditingActive()) return;
+      const node = this.jm.get_node?.(nodeId);
+      if (!node || node.isroot) {
+        this.hideAddButton();
+        return;
+      }
+      let btn = this.addButtonEl;
+      if (!btn) {
+        btn = document.createElement("button");
+        btn.textContent = "+";
+        btn.title = "Add child";
+        btn.style.position = "absolute";
+        btn.style.zIndex = "5";
+        btn.style.width = "22px";
+        btn.style.height = "22px";
+        btn.style.lineHeight = "22px";
+        btn.style.padding = "0";
+        btn.style.textAlign = "center";
+        btn.style.boxSizing = "border-box";
+        btn.style.borderRadius = "11px";
+        btn.style.border = "1px solid #90c2ff";
+        btn.style.background = "#e8f2ff";
+        btn.style.color = "#0b3d91";
+        btn.style.cursor = "pointer";
+        this.containerElDiv.appendChild(btn);
+        this.addButtonEl = btn;
+      }
+      if (this.addButtonEl && this.addButtonEl.parentElement !== this.containerElDiv) {
+        this.containerElDiv.appendChild(this.addButtonEl);
+      }
+      this.addButtonEl.onclick = (e) => {
+        e.stopPropagation();
+        this.addChildUnder(nodeId);
+      };
+      if (!this.deleteButtonEl) {
+        const del = document.createElement("button");
+        del.textContent = "\u2212";
+        del.title = "Delete node";
+        del.style.position = "absolute";
+        del.style.zIndex = "5";
+        del.style.width = "22px";
+        del.style.height = "22px";
+        del.style.lineHeight = "22px";
+        del.style.padding = "0";
+        del.style.textAlign = "center";
+        del.style.boxSizing = "border-box";
+        del.style.borderRadius = "11px";
+        del.style.border = "1px solid #ff9aa2";
+        del.style.background = "#ffecef";
+        del.style.color = "#cc0033";
+        del.style.cursor = "pointer";
+        this.containerElDiv.appendChild(del);
+        this.deleteButtonEl = del;
+      }
+      if (this.deleteButtonEl && this.deleteButtonEl.parentElement !== this.containerElDiv) {
+        this.containerElDiv.appendChild(this.deleteButtonEl);
+      }
+      this.deleteButtonEl.onclick = (e) => {
+        e.stopPropagation();
+        this.deleteHeadingById(nodeId);
+      };
+      this.addButtonForNodeId = nodeId;
+      this.updateAddButtonPosition();
+      if (this.addButtonRAF == null) {
+        const tick = () => {
+          this.updateAddButtonPosition();
+          if (this.addButtonEl && this.addButtonEl.style.display !== "none") {
+            this.addButtonRAF = window.requestAnimationFrame(tick);
+          } else {
+            if (this.addButtonRAF != null) {
+              window.cancelAnimationFrame(this.addButtonRAF);
+              this.addButtonRAF = null;
+            }
+          }
+        };
+        this.addButtonRAF = window.requestAnimationFrame(tick);
+      }
+    } catch {
+    }
+  }
+  hideAddButton() {
+    if (this.addButtonEl) {
+      this.addButtonEl.style.display = "none";
+      this.addButtonForNodeId = null;
+      if (this.addButtonRAF != null) {
+        try {
+          window.cancelAnimationFrame(this.addButtonRAF);
+        } catch {
+        }
+        this.addButtonRAF = null;
+      }
+    }
+    if (this.deleteButtonEl) {
+      this.deleteButtonEl.style.display = "none";
+    }
+  }
+  async addChildUnder(nodeId) {
+    if (!this.file) return;
+    const content = await this.app.vault.read(this.file);
+    const headings = computeHeadingSections(content);
+    const parent = headings.find((h) => h.id === nodeId) ?? null;
+    let levelToInsert = 1;
+    let insertPos = content.length;
+    if (parent) {
+      levelToInsert = Math.min(parent.level + 1, 6);
+      insertPos = Math.min(parent.end + 1, content.length);
+    }
+    const headingPrefix = "#".repeat(levelToInsert);
+    const needLeadingNewline = insertPos > 0 && content.charAt(insertPos - 1) !== "\n";
+    const placeholder = "\u65B0\u6807\u9898";
+    const insertText = `${needLeadingNewline ? "\n" : ""}${headingPrefix} ${placeholder}
+`;
+    const updated = content.slice(0, insertPos) + insertText + content.slice(insertPos);
+    await this.app.vault.modify(this.file, updated);
+    new import_obsidian.Notice("Child heading inserted");
+    const newHeadingStart = insertPos + (needLeadingNewline ? 1 : 0);
+    const before = updated.slice(0, newHeadingStart);
+    const newLineIndex = before.match(/\n/g)?.length ?? 0;
+    const chStart = headingPrefix.length + 1;
+    const chEnd = chStart + placeholder.length;
+    this.focusEditorToRange(newLineIndex, chStart, chEnd);
+    this.showAddButton(nodeId);
+  }
+  focusEditorToRange(line, chStart, chEnd) {
+    try {
+      const mdLeaves = this.app.workspace.getLeavesOfType("markdown");
+      for (const leaf of mdLeaves) {
+        const v = leaf.view;
+        if (v?.file?.path === this.file?.path) {
+          const mdView = v;
+          const editor = mdView.editor;
+          const from = { line, ch: chStart };
+          const to = { line, ch: chEnd };
+          setTimeout(() => {
+            try {
+              this.app.workspace.setActiveLeaf(leaf, { focus: true });
+            } catch {
+            }
+            try {
+              this.app.workspace.revealLeaf(leaf);
+            } catch {
+            }
+            try {
+              editor.focus?.();
+            } catch {
+            }
+            try {
+              editor.setSelection(from, to);
+            } catch {
+            }
+            try {
+              editor.scrollIntoView({ from, to }, true);
+            } catch {
+            }
+          }, 0);
+          break;
+        }
+      }
+    } catch {
+    }
+  }
+  updateAddButtonPosition() {
+    try {
+      if (!this.addButtonEl || !this.containerElDiv || !this.addButtonForNodeId) return;
+      const nodeEl = this.containerElDiv.querySelector(`jmnode[nodeid="${this.addButtonForNodeId}"]`);
+      if (!nodeEl) return;
+      const node = this.jm?.get_node?.(this.addButtonForNodeId);
+      const rect = nodeEl.getBoundingClientRect();
+      const hostRect = this.containerElDiv.getBoundingClientRect();
+      const isLeft = node && node.direction === (window.jsMind?.direction?.left ?? "left");
+      const xAdd = isLeft ? rect.left - hostRect.left - 28 : rect.right - hostRect.left + 6;
+      const btnH = this.addButtonEl?.offsetHeight || 22;
+      const centerYRaw = rect.top - hostRect.top + (rect.height - btnH) / 2;
+      const centerY = Math.round(centerYRaw) - 3;
+      this.addButtonEl.style.left = `${xAdd}px`;
+      this.addButtonEl.style.top = `${centerY}px`;
+      this.addButtonEl.style.transform = "";
+      this.addButtonEl.style.display = "block";
+      if (this.deleteButtonEl) {
+        const gap = 4;
+        const xDel = isLeft ? xAdd - (22 + gap) : xAdd + (22 + gap);
+        this.deleteButtonEl.style.left = `${xDel}px`;
+        this.deleteButtonEl.style.top = `${centerY}px`;
+        this.deleteButtonEl.style.transform = "";
+        this.deleteButtonEl.style.display = "block";
+      }
+    } catch {
+    }
+  }
+  async deleteHeadingById(nodeId) {
+    if (!this.file) return;
+    try {
+      const content = await this.app.vault.read(this.file);
+      const headings = computeHeadingSections(content);
+      const target = headings.find((h) => h.id === nodeId);
+      if (!target) return;
+      const start = target.start;
+      const end = Math.min(target.end + 1, content.length);
+      const updated = content.slice(0, start) + content.slice(end);
+      await this.app.vault.modify(this.file, updated);
+      new import_obsidian.Notice("Node deleted");
+      const newHeadings = computeHeadingSections(updated);
+      const parentId = target.parentId;
+      if (parentId && newHeadings.find((h) => h.id === parentId)) {
+        this.showAddButton(parentId);
+      } else {
+        this.hideAddButton();
+      }
+    } catch {
+    }
+  }
+  async renameHeadingInFile(nodeId, nextTitleRaw) {
+    if (!this.file) return;
+    const safeTitle = nextTitleRaw && nextTitleRaw.trim() ? nextTitleRaw.trim() : "\u65B0\u6807\u9898";
+    try {
+      const content = await this.app.vault.read(this.file);
+      const lines = content.split("\n");
+      const headings = computeHeadingSections(content);
+      const target = headings.find((h) => h.id === nodeId);
+      if (!target) return;
+      const lineIdx = target.lineStart;
+      if (lineIdx < 0 || lineIdx >= lines.length) return;
+      if (target.style === "atx") {
+        const original = lines[lineIdx] ?? "";
+        const m = original.match(/^(#{1,6})([ \t]+)(.*?)([ \t#]*)$/);
+        if (m) {
+          const leading = m[1] + m[2];
+          const trailing = m[4] ?? "";
+          lines[lineIdx] = `${leading}${safeTitle}${trailing}`;
+        } else {
+          const hashes = "#".repeat(Math.min(Math.max(target.level, 1), 6));
+          lines[lineIdx] = `${hashes} ${safeTitle}`;
+        }
+      } else {
+        lines[lineIdx] = safeTitle;
+      }
+      const updated = lines.join("\n");
+      this.suppressProgrammaticNodeUpdate = true;
+      await this.app.vault.modify(this.file, updated);
+      if (this.jm && nextTitleRaw.trim().length === 0) {
+        try {
+          this.jm.update_node(nodeId, safeTitle);
+        } catch {
+        }
+      }
+      window.setTimeout(() => {
+        this.suppressProgrammaticNodeUpdate = false;
+      }, 300);
+    } catch {
+      this.suppressProgrammaticNodeUpdate = false;
+    }
   }
   getSelectedHeading() {
     if (!this.jm) return null;
@@ -694,69 +1024,6 @@ var MindmapView = class extends import_obsidian.ItemView {
     } catch {
     }
     return false;
-  }
-  async handleAddChild() {
-    if (!this.file) return;
-    const selected = this.getSelectedHeading();
-    const content = await this.app.vault.read(this.file);
-    const headings = computeHeadingSections(content);
-    let parent = selected;
-    if (!parent) {
-      const firstH1 = headings.find((h) => h.level === 1) ?? null;
-      parent = firstH1;
-    }
-    let levelToInsert = 1;
-    let insertPos = content.length;
-    if (parent) {
-      levelToInsert = Math.min(parent.level + 1, 6);
-      insertPos = parent.end + 1;
-    }
-    const title = window.prompt("New node title");
-    if (!title) return;
-    const headingPrefix = "#".repeat(levelToInsert);
-    const prefix = content.endsWith("\n") ? "" : "\n";
-    const insertText = `${prefix}${headingPrefix} ${title}
-`;
-    const updated = content.slice(0, insertPos) + insertText + content.slice(insertPos);
-    await this.app.vault.modify(this.file, updated);
-    new import_obsidian.Notice("Child node added");
-  }
-  async handleRename() {
-    if (!this.file) return;
-    const selected = this.getSelectedHeading();
-    if (!selected) {
-      new import_obsidian.Notice("Select a node to rename");
-      return;
-    }
-    const content = await this.app.vault.read(this.file);
-    const headings = computeHeadingSections(content);
-    const target = headings.find((h) => h.id === selected.id);
-    if (!target) return;
-    const newTitle = window.prompt("New title", target.title);
-    if (!newTitle) return;
-    const headingLine = content.substring(target.start, target.headingTextEnd);
-    const replacedLine = headingLine.replace(/^(#{1,6})\s+.*$/, `$1 ${newTitle}`);
-    const updated = content.slice(0, target.start) + replacedLine + content.slice(target.headingTextEnd);
-    await this.app.vault.modify(this.file, updated);
-    new import_obsidian.Notice("Node renamed");
-  }
-  async handleDelete() {
-    if (!this.file) return;
-    const selected = this.getSelectedHeading();
-    if (!selected) {
-      new import_obsidian.Notice("Select a node to delete");
-      return;
-    }
-    if (!confirm("Delete this node and its content?")) return;
-    const content = await this.app.vault.read(this.file);
-    const headings = computeHeadingSections(content);
-    const target = headings.find((h) => h.id === selected.id);
-    if (!target) return;
-    const start = target.start;
-    const end = Math.min(target.end + 1, content.length);
-    const updated = content.slice(0, start) + content.slice(end);
-    await this.app.vault.modify(this.file, updated);
-    new import_obsidian.Notice("Node deleted");
   }
 };
 var MindmapPlugin = class extends import_obsidian.Plugin {
