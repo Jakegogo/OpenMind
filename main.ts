@@ -170,6 +170,8 @@ class MindmapView extends ItemView {
   private driverHoldUntilMs: number = 0;
   private scrollSyncEl: HTMLElement | null = null;
   private scrollSyncHandler: ((e: Event) => void) | null = null;
+  private scrollSyncLastRunMs: number = 0;
+  private scrollSyncPendingTimeoutId: number | null = null;
   private getJsMindEventName(type: any, data: any): string {
     try {
       if (typeof type === 'string') return type;
@@ -910,12 +912,30 @@ class MindmapView extends ItemView {
       const hostRect = this.containerElDiv.getBoundingClientRect();
       const rect = nodeEl.getBoundingClientRect();
       const margin = 8;
-      const offLeft = rect.right < hostRect.left + margin;
-      const offRight = rect.left > hostRect.right - margin;
-      const offTop = rect.bottom < hostRect.top + margin;
-      const offBottom = rect.top > hostRect.bottom - margin;
-      const offscreen = offLeft || offRight || offTop || offBottom;
-      if (offscreen) {
+      const fullyOffLeft = rect.right < hostRect.left + margin;
+      const fullyOffRight = rect.left > hostRect.right - margin;
+      const fullyOffTop = rect.bottom < hostRect.top + margin;
+      const fullyOffBottom = rect.top > hostRect.bottom - margin;
+      const fullyOffscreen = fullyOffLeft || fullyOffRight || fullyOffTop || fullyOffBottom;
+
+      // Gentle horizontal nudge if only partially clipped
+      let nudged = false;
+      const clippedLeft = rect.left < hostRect.left + margin;
+      const clippedRight = rect.right > hostRect.right - margin;
+      if (!fullyOffscreen && (clippedLeft || clippedRight)) {
+        const overflowLeft = clippedLeft ? (hostRect.left + margin - rect.left) : 0;
+        const overflowRight = clippedRight ? (rect.right - (hostRect.right - margin)) : 0;
+        const maxNudge = 60; // px
+        let deltaX = 0;
+        if (overflowRight > 0) deltaX += Math.min(overflowRight, maxNudge); // scroll right
+        if (overflowLeft > 0) deltaX -= Math.min(overflowLeft, maxNudge);   // scroll left
+        const el: any = this.containerElDiv;
+        if (typeof el.scrollLeft === 'number' && deltaX !== 0) {
+          try { el.scrollLeft += deltaX; nudged = true; } catch {}
+        }
+      }
+
+      if (!nudged && fullyOffscreen) {
         this.allowCenterRoot = true;
         try { this.jm.center_node && this.jm.center_node(node); } catch {}
         try { this.jm.view && this.jm.view.center_node && this.jm.view.center_node(node); } catch {}
@@ -994,23 +1014,19 @@ class MindmapView extends ItemView {
       if (!activeMd) return;
       const scroller = (activeMd as any).contentEl?.querySelector?.('.cm-scroller');
       if (!scroller) return;
-      let ticking = false;
-      const onScroll = () => {
-        if (!this.isAutoFollowEnabled()) return;
-        if (!this.file || activeMd.file?.path !== this.file.path) return;
-        if (ticking) return;
-        // When currently in cursor-driven mode, fully disable scroll-driven syncing
-        if (this.currentSelectionDriver === 'cursor') return;
-        ticking = true;
-        const scRect = (scroller as HTMLElement).getBoundingClientRect();
+      const scheduleRun = () => {
         const run = () => {
           try {
+            if (!this.isAutoFollowEnabled()) return;
+            if (!this.file || activeMd.file?.path !== this.file.path) return;
+            if (this.currentSelectionDriver === 'cursor') return;
             const editor = activeMd.editor as any;
             const content = editor.getValue();
             const headings = computeHeadingSections(content);
-            if (headings.length === 0) { ticking = false; return; }
+            if (headings.length === 0) return;
             let best: HeadingNode | null = null;
             const cmAny = editor?.cm;
+            const scRect = (scroller as HTMLElement).getBoundingClientRect();
             // Prefer CM6 EditorView directly when available
             if (cmAny) {
               let posRes: any = null;
@@ -1037,25 +1053,50 @@ class MindmapView extends ItemView {
                 }
               }
             }
-            // If none found at/under top, do not change selection
             if (best && best.id !== this.lastSyncedNodeId) {
               this.lastSyncedNodeId = best.id;
               this.hideAddButton();
               const center = false;
               this.suppressRevealUntilMs = Date.now() + 600;
               this.selectMindmapNodeById(best.id, center);
-              // Ensure the node is visible; only center if offscreen
               this.ensureMindmapNodeVisible(best.id);
               this.currentSelectionDriver = 'scroll';
               this.driverHoldUntilMs = Date.now() + 700;
             }
           } catch {}
-          ticking = false;
         };
         if (typeof window.requestAnimationFrame === 'function') {
           window.requestAnimationFrame(run);
         } else {
           setTimeout(run, 16);
+        }
+      };
+      const onScroll = () => {
+        if (!this.isAutoFollowEnabled()) return;
+        if (!this.file || activeMd.file?.path !== this.file.path) return;
+        if (this.currentSelectionDriver === 'cursor') return;
+        const now = Date.now();
+        const elapsed = now - this.scrollSyncLastRunMs;
+        const threshold = 200;
+        if (elapsed >= threshold) {
+          this.scrollSyncLastRunMs = now;
+          scheduleRun();
+        } else {
+          if (this.scrollSyncPendingTimeoutId == null) {
+            const delay = threshold - elapsed;
+            this.scrollSyncPendingTimeoutId = window.setTimeout(() => {
+              this.scrollSyncPendingTimeoutId = null;
+              this.scrollSyncLastRunMs = Date.now();
+              scheduleRun();
+            }, delay);
+            // Ensure timer is cleared on detach
+            this.register(() => {
+              if (this.scrollSyncPendingTimeoutId != null) {
+                try { window.clearTimeout(this.scrollSyncPendingTimeoutId); } catch {}
+                this.scrollSyncPendingTimeoutId = null;
+              }
+            });
+          }
         }
       };
       scroller.addEventListener('scroll', onScroll);

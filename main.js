@@ -175,6 +175,8 @@ var MindmapView = class extends import_obsidian.ItemView {
     this.driverHoldUntilMs = 0;
     this.scrollSyncEl = null;
     this.scrollSyncHandler = null;
+    this.scrollSyncLastRunMs = 0;
+    this.scrollSyncPendingTimeoutId = null;
     this.plugin = plugin;
   }
   getJsMindEventName(type, data) {
@@ -949,11 +951,14 @@ var MindmapView = class extends import_obsidian.ItemView {
       const clippedLeft = rect.left < hostRect.left + margin;
       const clippedRight = rect.right > hostRect.right - margin;
       if (!fullyOffscreen && (clippedLeft || clippedRight)) {
-        const deltaLeft = clippedLeft ? hostRect.left + margin - rect.left : 0;
-        const deltaRight = clippedRight ? rect.right - (hostRect.right - margin) : 0;
-        const deltaX = deltaRight - deltaLeft;
+        const overflowLeft = clippedLeft ? hostRect.left + margin - rect.left : 0;
+        const overflowRight = clippedRight ? rect.right - (hostRect.right - margin) : 0;
+        const maxNudge = 60;
+        let deltaX = 0;
+        if (overflowRight > 0) deltaX += Math.min(overflowRight, maxNudge);
+        if (overflowLeft > 0) deltaX -= Math.min(overflowLeft, maxNudge);
         const el = this.containerElDiv;
-        if (typeof el.scrollLeft === "number") {
+        if (typeof el.scrollLeft === "number" && deltaX !== 0) {
           try {
             el.scrollLeft += deltaX;
             nudged = true;
@@ -1042,25 +1047,19 @@ var MindmapView = class extends import_obsidian.ItemView {
       if (!activeMd) return;
       const scroller = activeMd.contentEl?.querySelector?.(".cm-scroller");
       if (!scroller) return;
-      let ticking = false;
-      const onScroll = () => {
-        if (!this.isAutoFollowEnabled()) return;
-        if (!this.file || activeMd.file?.path !== this.file.path) return;
-        if (ticking) return;
-        if (this.currentSelectionDriver === "cursor") return;
-        ticking = true;
-        const scRect = scroller.getBoundingClientRect();
+      const scheduleRun = () => {
         const run = () => {
           try {
+            if (!this.isAutoFollowEnabled()) return;
+            if (!this.file || activeMd.file?.path !== this.file.path) return;
+            if (this.currentSelectionDriver === "cursor") return;
             const editor = activeMd.editor;
             const content = editor.getValue();
             const headings = computeHeadingSections(content);
-            if (headings.length === 0) {
-              ticking = false;
-              return;
-            }
+            if (headings.length === 0) return;
             let best = null;
             const cmAny = editor?.cm;
+            const scRect = scroller.getBoundingClientRect();
             if (cmAny) {
               let posRes = null;
               if (typeof cmAny.posAtCoords === "function") {
@@ -1109,12 +1108,41 @@ var MindmapView = class extends import_obsidian.ItemView {
             }
           } catch {
           }
-          ticking = false;
         };
         if (typeof window.requestAnimationFrame === "function") {
           window.requestAnimationFrame(run);
         } else {
           setTimeout(run, 16);
+        }
+      };
+      const onScroll = () => {
+        if (!this.isAutoFollowEnabled()) return;
+        if (!this.file || activeMd.file?.path !== this.file.path) return;
+        if (this.currentSelectionDriver === "cursor") return;
+        const now = Date.now();
+        const elapsed = now - this.scrollSyncLastRunMs;
+        const threshold = 200;
+        if (elapsed >= threshold) {
+          this.scrollSyncLastRunMs = now;
+          scheduleRun();
+        } else {
+          if (this.scrollSyncPendingTimeoutId == null) {
+            const delay = threshold - elapsed;
+            this.scrollSyncPendingTimeoutId = window.setTimeout(() => {
+              this.scrollSyncPendingTimeoutId = null;
+              this.scrollSyncLastRunMs = Date.now();
+              scheduleRun();
+            }, delay);
+            this.register(() => {
+              if (this.scrollSyncPendingTimeoutId != null) {
+                try {
+                  window.clearTimeout(this.scrollSyncPendingTimeoutId);
+                } catch {
+                }
+                this.scrollSyncPendingTimeoutId = null;
+              }
+            });
+          }
         }
       };
       scroller.addEventListener("scroll", onScroll);
