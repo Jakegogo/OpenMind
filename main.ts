@@ -1,4 +1,4 @@
-import { App, Editor, ItemView, MarkdownView, Notice, Plugin, TFile, WorkspaceLeaf, requestUrl } from 'obsidian';
+import { App, Editor, ItemView, MarkdownView, Notice, Plugin, PluginSettingTab, Setting, TFile, WorkspaceLeaf, requestUrl } from 'obsidian';
 
 declare global {
   interface Window {
@@ -157,6 +157,19 @@ class MindmapView extends ItemView {
   private lastDblClickAtMs: number = 0;
   private deleteButtonEl: HTMLButtonElement | null = null;
   private suppressProgrammaticNodeUpdate: boolean = false;
+  private isSuspended: boolean = false;
+  private pendingDirty: boolean = false;
+  private editingSizerRAF: number | null = null;
+  private editingSizerNodeEl: HTMLElement | null = null;
+  private idToStableKey: Map<string, string> = new Map();
+  private stableKeyToId: Map<string, string> = new Map();
+  private suppressRevealUntilMs: number = 0;
+  private suppressCursorSyncUntilMs2: number = 0; // suppress cursor-driven sync after scroll-driven
+  private suppressScrollSyncUntilMs: number = 0; // suppress scroll-driven sync after cursor-driven
+  private currentSelectionDriver: 'scroll' | 'cursor' | null = null;
+  private driverHoldUntilMs: number = 0;
+  private scrollSyncEl: HTMLElement | null = null;
+  private scrollSyncHandler: ((e: Event) => void) | null = null;
   private getJsMindEventName(type: any, data: any): string {
     try {
       if (typeof type === 'string') return type;
@@ -192,6 +205,35 @@ class MindmapView extends ItemView {
     } catch { return false; }
   }
 
+  private isViewVisible(): boolean {
+    try {
+      if (!this.containerElDiv) return false;
+      if (!document.body.contains(this.containerElDiv)) return false;
+      const cs = getComputedStyle(this.containerElDiv);
+      if (cs.display === 'none' || cs.visibility === 'hidden') return false;
+      if (this.containerElDiv.offsetWidth === 0 || this.containerElDiv.offsetHeight === 0) return false;
+      const rects = this.containerElDiv.getClientRects();
+      return rects.length > 0;
+    } catch { return true; }
+  }
+
+  private setSuspended(suspend: boolean) {
+    if (this.isSuspended === suspend) return;
+    this.isSuspended = suspend;
+    if (suspend) {
+      this.hideAddButton();
+    } else {
+      // When resuming, refresh if there were changes while hidden
+      if (this.pendingDirty || !this.jm) {
+        this.pendingDirty = false;
+        this.refresh().catch(() => {});
+      } else {
+        try { this.jm && this.jm.resize && this.jm.resize(); } catch {}
+        this.updateAddButtonPosition();
+      }
+    }
+  }
+
   constructor(leaf: WorkspaceLeaf, plugin: MindmapPlugin) {
     super(leaf);
     this.plugin = plugin;
@@ -212,8 +254,27 @@ class MindmapView extends ItemView {
     this.contentEl.style.flexDirection = 'column';
     this.contentEl.style.height = '100%';
     ;(this.containerEl as HTMLElement).style.height = '100%';
+    // Inject minimal toolbar styles once
+    try {
+      const styleId = 'obsidian-jsmind-toolbar-style';
+      if (!document.getElementById(styleId)) {
+        const st = document.createElement('style');
+        st.id = styleId;
+        st.textContent = `
+          .mm-toolbar { display: flex; align-items: center; gap: 6px; padding: 4px 0; }
+          .mm-toolbar button {
+            appearance: none; border: 1px solid var(--background-modifier-border);
+            background: var(--interactive-normal); color: var(--text-normal);
+            padding: 2px 8px; border-radius: 5px; font-size: 12px; line-height: 1.2; cursor: pointer;
+          }
+          .mm-toolbar button:hover { background: var(--interactive-hover); }
+        `;
+        document.head.appendChild(st);
+      }
+    } catch {}
     const toolbar = this.contentEl.createDiv({ cls: 'mm-toolbar' });
     const refreshBtn = toolbar.createEl('button', { text: 'Refresh' });
+    const followBtn = toolbar.createEl('button', { text: 'Follow Scroll' });
 
     const container = this.contentEl.createDiv();
     container.id = 'jsmind_container';
@@ -224,6 +285,13 @@ class MindmapView extends ItemView {
     container.style.position = 'relative';
     this.containerElDiv = container;
     refreshBtn.addEventListener('click', () => this.refresh());
+    followBtn.addEventListener('click', () => {
+      // Re-enable scroll-driven follow immediately
+      this.currentSelectionDriver = 'scroll';
+      this.driverHoldUntilMs = Date.now() + 800;
+      this.suppressCursorSyncUntilMs2 = 0;
+      this.suppressScrollSyncUntilMs = 0;
+    });
 
     try {
       await this.ensureJsMindLoaded();
@@ -237,6 +305,11 @@ class MindmapView extends ItemView {
         return;
       }
     }
+    // Default selection driver to scroll on initial open
+    this.currentSelectionDriver = 'scroll';
+    this.driverHoldUntilMs = Date.now() + 800;
+    this.suppressCursorSyncUntilMs2 = 0;
+    this.suppressScrollSyncUntilMs = 0;
     await this.refresh();
 
     // Observe size changes for reliable canvas resizing
@@ -251,11 +324,34 @@ class MindmapView extends ItemView {
       this.register(() => ro.disconnect());
     } catch {}
 
+    // Observe visibility to suspend/resume rendering work
+    try {
+      if (this.containerElDiv) {
+        const iv = new IntersectionObserver((entries) => {
+          const ent = entries[0];
+          if (!ent) return;
+          const visible = ent.isIntersecting && ent.intersectionRatio > 0;
+          this.setSuspended(!visible);
+        }, { root: this.containerElDiv.parentElement || undefined });
+        iv.observe(this.containerElDiv);
+        this.register(() => iv.disconnect());
+      }
+      // Also listen to layout changes as a fallback
+      this.registerEvent(this.app.workspace.on('layout-change', () => {
+        const visible = this.isViewVisible();
+        this.setSuspended(!visible);
+      }));
+    } catch {}
+
     // Attach editor -> mindmap selection sync
     this.attachEditorSync();
 
     this.registerEvent(this.app.vault.on('modify', async (file) => {
       if (this.file && file.path === this.file.path) {
+        if (this.isSuspended || !this.isViewVisible()) {
+          this.pendingDirty = true;
+          return;
+        }
         await this.softSyncFromDisk();
       }
     }));
@@ -269,6 +365,8 @@ class MindmapView extends ItemView {
         const ext = (file as any).extension || (file.name?.split('.').pop() ?? '');
         if (ext.toLowerCase() === 'md' && file.path !== this.file?.path) {
           await this.setFile(file);
+          // reattach scroll sync on file switch
+          try { this.attachEditorSync(); } catch {}
         }
       } catch {}
     }));
@@ -282,6 +380,8 @@ class MindmapView extends ItemView {
           const ext = (mv.file as any).extension || (mv.file.name?.split('.').pop() ?? '');
           if (ext.toLowerCase() === 'md' && mv.file.path !== this.file?.path) {
             await this.setFile(mv.file);
+            // reattach scroll sync on leaf change
+            try { this.attachEditorSync(); } catch {}
           }
         }
       } catch {}
@@ -291,6 +391,11 @@ class MindmapView extends ItemView {
   async setFile(file: TFile) {
     this.file = file;
     this.lastSyncedNodeId = null;
+    // Reset driver to scroll on file switch
+    this.currentSelectionDriver = 'scroll';
+    this.driverHoldUntilMs = Date.now() + 800;
+    this.suppressCursorSyncUntilMs2 = 0;
+    this.suppressScrollSyncUntilMs = 0;
     if (this.containerElDiv) await this.refresh();
   }
 
@@ -378,6 +483,10 @@ class MindmapView extends ItemView {
       if (!active) return;
       this.file = active;
     }
+    if (this.isSuspended || !this.isViewVisible()) {
+      this.pendingDirty = true;
+      return;
+    }
     // Stop and clear floating buttons before rebuilding DOM
     this.hideAddButton();
     this.addButtonEl = null;
@@ -390,24 +499,12 @@ class MindmapView extends ItemView {
 
     const content = await this.app.vault.read(this.file);
     this.headingsCache = computeHeadingSections(content);
+    this.rebuildStableKeyIndex();
     const mind = buildJsMindTreeFromHeadings(this.headingsCache, this.file.name);
     if (!this.containerElDiv || !window.jsMind) return;
     this.containerElDiv.empty();
     this.containerElDiv.id = 'jsmind_container';
-    const options = { container: 'jsmind_container', theme: 'info', editable: true, model: 'side', view: { engine: 'svg' ,expander_style: 'number', draggable: false }};
-    // Ensure root node style matches themed nodes instead of white
-//     try {
-//       const overrideId = 'jsmind-theme-override';
-//       if (!document.getElementById(overrideId)) {
-//         const style = document.createElement('style');
-//         style.id = overrideId;
-//         style.textContent = `
-// /* Make root node adopt theme colors instead of white */
-// .theme-primary jmnode.root { background: #e8f2ff !important; border-color: #90c2ff !important; color: #0b3d91 !important; }
-// `;
-//         document.head.appendChild(style);
-//       }
-//     } catch {}
+    const options = { container: 'jsmind_container', theme: 'info', editable: true, mode: 'side', view: { engine: 'svg' ,expander_style: 'number', draggable: false }};
 
     this.jm = new window.jsMind(options);
     // Wrap center_root so plugin can decide whether to allow auto-centering root
@@ -426,6 +523,18 @@ class MindmapView extends ItemView {
       }
     }
     try { this.jm.expand_all && this.jm.expand_all(); } catch {}
+    // Apply persisted collapsed states for current file after expand_all
+    try {
+      const path = this.file?.path ?? '';
+      const collapsedSet = (this.plugin as any).getCollapsedSet?.(path) as Set<string> | undefined;
+      if (collapsedSet && collapsedSet.size > 0) {
+        for (const key of collapsedSet) {
+          const id = this.stableKeyToId.get(key);
+          if (!id) continue;
+          try { this.jm.collapse_node && this.jm.collapse_node(id); } catch {}
+        }
+      }
+    } catch {}
     try { this.jm.resize && this.jm.resize(); } catch {}
 
     // Sync: click/select a node -> reveal and select heading in markdown editor
@@ -436,6 +545,7 @@ class MindmapView extends ItemView {
             const evt = this.getJsMindEventName(type, data);
             const nodeIdFromEvent = this.getEventNodeId(data);
             if (evt === 'select_node' && nodeIdFromEvent) {
+              if (Date.now() < this.suppressRevealUntilMs) return;
               if (this.isMindmapEditingActive()) return;
               if (this.suppressSync) return;
               // Debounce single-click to not block double-click editing in jsMind
@@ -461,7 +571,18 @@ class MindmapView extends ItemView {
             if (evt === 'select_clear') {
               this.hideAddButton();
             }
-            console.log('event', { type, evt, nodeId: nodeIdFromEvent, topic: this.getEventNodeTopic(data) });
+            // Persist collapse / expand state per file using stable key
+            if (nodeIdFromEvent) {
+              const key = this.idToStableKey.get(nodeIdFromEvent);
+              if (key) {
+                if (evt === 'collapse_node' || evt === 'collapse') {
+                  try { (this.plugin as any).markCollapsed?.(this.file?.path ?? '', key); } catch {}
+                }
+                if (evt === 'expand_node' || evt === 'expand') {
+                  try { (this.plugin as any).unmarkCollapsed?.(this.file?.path ?? '', key); } catch {}
+                }
+              }
+            }
           });
         }
         if (this.containerElDiv) {
@@ -504,6 +625,10 @@ class MindmapView extends ItemView {
   }
 
   private async softSyncFromDisk() {
+    if (this.isSuspended || !this.isViewVisible()) {
+      this.pendingDirty = true;
+      return;
+    }
     if (!this.file || !this.jm) {
       await this.refresh();
       return;
@@ -528,33 +653,72 @@ class MindmapView extends ItemView {
     const firstNextH1 = next.find(h => h.level === 1) ?? null;
     const rootId = firstPrevH1 ? firstPrevH1.id : `virtual_root_${this.file?.name}`;
 
-    // Remove nodes that no longer exist
-    for (const oldH of prev) {
-      if (!nextMap.has(oldH.id)) {
-        try { this.jm.remove_node(oldH.id); } catch {}
+    const getPrevDepth = (h: HeadingNode): number => {
+      let depth = 0;
+      let cur: HeadingNode | undefined = h;
+      while (cur && cur.parentId) {
+        depth += 1;
+        cur = prevMap.get(cur.parentId);
       }
+      return depth;
+    };
+    // Remove nodes that no longer exist (deepest first) and only if present in jm
+    const toRemove = prev.filter(h => !nextMap.has(h.id)).sort((a, b) => getPrevDepth(b) - getPrevDepth(a));
+    for (const oldH of toRemove) {
+      try {
+        const exists = this.jm.get_node ? this.jm.get_node(oldH.id) : null;
+        if (exists) this.jm.remove_node(oldH.id);
+      } catch {}
     }
 
-    // Add or update nodes
+    const getNextDepth = (h: HeadingNode): number => {
+      let depth = 0;
+      let cur: HeadingNode | undefined = h;
+      while (cur && cur.parentId) {
+        depth += 1;
+        cur = nextMap.get(cur.parentId);
+      }
+      return depth;
+    };
+    const resolveExistingParentId = (h: HeadingNode): string => {
+      // ascend until find an ancestor that exists in jm
+      let ancestorId: string | null = h.parentId ?? (firstNextH1 ? firstNextH1.id : rootId);
+      while (ancestorId) {
+        try {
+          const exists = this.jm.get_node ? this.jm.get_node(ancestorId) : null;
+          if (exists) return ancestorId;
+        } catch {}
+        const ancestor = ancestorId ? nextMap.get(ancestorId) : undefined;
+        if (!ancestor) break;
+        ancestorId = ancestor.parentId ?? (firstNextH1 ? firstNextH1.id : rootId);
+      }
+      return firstNextH1 ? firstNextH1.id : rootId;
+    };
+
+    // Add nodes (parents before children)
+    const toAdd = next.filter(h => !prevMap.has(h.id)).sort((a, b) => getNextDepth(a) - getNextDepth(b));
+    for (const newH of toAdd) {
+      const parentKey = resolveExistingParentId(newH);
+      try { this.jm.add_node(parentKey, newH.id, (newH.title && newH.title.trim()) ? newH.title : '新标题'); } catch {}
+    }
+
+    // Update titles and reparent existing nodes
     for (const newH of next) {
       const existed = prevMap.get(newH.id);
-      if (!existed) {
-        // add under its computed parent
-        const parentKey = newH.parentId ?? (firstNextH1 ? firstNextH1.id : rootId);
-        try { this.jm.add_node(parentKey, newH.id, (newH.title && newH.title.trim()) ? newH.title : '新标题'); } catch {}
-        continue;
-      }
-      // update title if changed
+      if (!existed) continue;
       if (existed.title !== newH.title) {
         try { this.jm.update_node(newH.id, (newH.title && newH.title.trim()) ? newH.title : '新标题'); } catch {}
       }
-      // reparent if parent changed
       const oldParent = existed.parentId ?? (firstPrevH1 ? firstPrevH1.id : rootId);
-      const newParent = newH.parentId ?? (firstNextH1 ? firstNextH1.id : rootId);
-      if (oldParent !== newParent) {
+      const newParentDesired = newH.parentId ?? (firstNextH1 ? firstNextH1.id : rootId);
+      if (oldParent !== newParentDesired) {
+        const parentKey = resolveExistingParentId(newH);
         try {
-          this.jm.remove_node(newH.id);
-          this.jm.add_node(newParent, newH.id, (newH.title && newH.title.trim()) ? newH.title : '新标题');
+          const exists = this.jm.get_node ? this.jm.get_node(newH.id) : null;
+          if (exists) {
+            this.jm.remove_node(newH.id);
+          }
+          this.jm.add_node(parentKey, newH.id, (newH.title && newH.title.trim()) ? newH.title : '新标题');
         } catch {}
       }
     }
@@ -623,6 +787,43 @@ class MindmapView extends ItemView {
       }
       if (canvas && prev.canvasTransform && prev.canvasTransform !== 'none') {
         (canvas.style as any).transform = prev.canvasTransform as string;
+      }
+    } catch {}
+  }
+
+  private rebuildStableKeyIndex() {
+    try {
+      this.idToStableKey.clear();
+      this.stableKeyToId.clear();
+      // Build parent chain and sibling index per heading
+      const byId = new Map(this.headingsCache.map(h => [h.id, h] as const));
+      const childrenByParent = new Map<string | null, HeadingNode[]>();
+      for (const h of this.headingsCache) {
+        const p = h.parentId ?? null;
+        if (!childrenByParent.has(p)) childrenByParent.set(p, []);
+        childrenByParent.get(p)!.push(h);
+      }
+      // ensure siblings order is the original order in headingsCache
+      for (const [p, arr] of childrenByParent) {
+        arr.sort((a, b) => a.start - b.start);
+      }
+      const computeKey = (h: HeadingNode): string => {
+        const chain: number[] = [];
+        let cur: HeadingNode | null = h;
+        while (cur) {
+          const parent = cur.parentId ? byId.get(cur.parentId) ?? null : null;
+          const siblings = childrenByParent.get(cur.parentId ?? null) ?? [];
+          const idx = Math.max(0, siblings.findIndex(x => x.id === cur!.id));
+          chain.push(idx);
+        	cur = parent;
+        }
+        chain.reverse();
+        return chain.join('.') || '0';
+      };
+      for (const h of this.headingsCache) {
+        const key = computeKey(h);
+        this.idToStableKey.set(h.id, key);
+        this.stableKeyToId.set(key, h.id);
       }
     } catch {}
   }
@@ -699,11 +900,39 @@ class MindmapView extends ItemView {
     } catch {}
   }
 
+  private ensureMindmapNodeVisible(nodeId: string) {
+    try {
+      if (!this.jm || !this.containerElDiv) return;
+      const node = this.jm.get_node ? this.jm.get_node(nodeId) : null;
+      if (!node) return;
+      const nodeEl = this.containerElDiv.querySelector(`jmnode[nodeid="${nodeId}"]`) as HTMLElement | null;
+      if (!nodeEl) return;
+      const hostRect = this.containerElDiv.getBoundingClientRect();
+      const rect = nodeEl.getBoundingClientRect();
+      const margin = 8;
+      const offLeft = rect.right < hostRect.left + margin;
+      const offRight = rect.left > hostRect.right - margin;
+      const offTop = rect.bottom < hostRect.top + margin;
+      const offBottom = rect.top > hostRect.bottom - margin;
+      const offscreen = offLeft || offRight || offTop || offBottom;
+      if (offscreen) {
+        this.allowCenterRoot = true;
+        try { this.jm.center_node && this.jm.center_node(node); } catch {}
+        try { this.jm.view && this.jm.view.center_node && this.jm.view.center_node(node); } catch {}
+        try { this.jm.resize && this.jm.resize(); } catch {}
+        this.allowCenterRoot = false;
+      }
+    } catch {}
+  }
+
   private attachEditorSync() {
     const trySync = async () => {
       if (!this.file) return;
+      if (Date.now() < this.suppressCursorSyncUntilMs2) return;
       if (Date.now() < this.suppressEditorSyncUntil) return;
       const activeMd = this.app.workspace.getActiveViewOfType(MarkdownView);
+      const editorFocused = !!(activeMd && this.isMarkdownEditorFocused(activeMd));
+      if (this.currentSelectionDriver === 'scroll' && Date.now() < this.driverHoldUntilMs && !editorFocused) return;
       if (!activeMd || activeMd.file?.path !== this.file.path) return;
       const editor = activeMd.editor;
       const cursor = editor.getCursor();
@@ -723,7 +952,13 @@ class MindmapView extends ItemView {
       if (current && current.id !== this.lastSyncedNodeId) {
         this.lastSyncedNodeId = current.id;
         const center = this.isMarkdownEditorFocused(activeMd);
+        this.suppressRevealUntilMs = Date.now() + 600;
+        this.suppressScrollSyncUntilMs = Date.now() + 400;
         this.selectMindmapNodeById(current.id, center);
+        // From markdown-driven selection: hide +/− to avoid accidental ops
+        this.hideAddButton();
+        this.currentSelectionDriver = 'cursor';
+        this.driverHoldUntilMs = Date.now() + 500;
       }
     };
 
@@ -746,6 +981,89 @@ class MindmapView extends ItemView {
     const id = window.setInterval(() => { trySync(); }, 400);
     this.editorSyncIntervalId = id as unknown as number;
     this.registerInterval(id as unknown as number);
+
+    // Scroll-based top heading sync when enabled
+    const attachScrollSync = () => {
+      // Detach previous
+      try {
+        if (this.scrollSyncEl && this.scrollSyncHandler) {
+          this.scrollSyncEl.removeEventListener('scroll', this.scrollSyncHandler);
+        }
+      } catch {}
+      const activeMd = this.app.workspace.getActiveViewOfType(MarkdownView);
+      if (!activeMd) return;
+      const scroller = (activeMd as any).contentEl?.querySelector?.('.cm-scroller');
+      if (!scroller) return;
+      let ticking = false;
+      const onScroll = () => {
+        if (!this.isAutoFollowEnabled()) return;
+        if (!this.file || activeMd.file?.path !== this.file.path) return;
+        if (ticking) return;
+        // When currently in cursor-driven mode, fully disable scroll-driven syncing
+        if (this.currentSelectionDriver === 'cursor') return;
+        ticking = true;
+        const scRect = (scroller as HTMLElement).getBoundingClientRect();
+        const run = () => {
+          try {
+            const editor = activeMd.editor as any;
+            const content = editor.getValue();
+            const headings = computeHeadingSections(content);
+            if (headings.length === 0) { ticking = false; return; }
+            let best: HeadingNode | null = null;
+            const cmAny = editor?.cm;
+            // Prefer CM6 EditorView directly when available
+            if (cmAny) {
+              let posRes: any = null;
+              if (typeof cmAny.posAtCoords === 'function') {
+                posRes = cmAny.posAtCoords({ x: scRect.left + 16, y: scRect.top + 1 });
+              } else if (cmAny.view && typeof cmAny.view.posAtCoords === 'function') {
+                posRes = cmAny.view.posAtCoords({ x: scRect.left + 16, y: scRect.top + 1 });
+              }
+              const pos = typeof posRes === 'number' ? posRes : (posRes && typeof posRes.pos === 'number' ? posRes.pos : null);
+              const doc = cmAny?.state?.doc ?? cmAny?.view?.state?.doc;
+              if (pos != null && doc?.lineAt) {
+                try {
+                  const lineNo = doc.lineAt(pos).number - 1;
+                  for (const h of headings) { if (h.lineStart >= lineNo) { best = h; break; } }
+                } catch {}
+              }
+            }
+            if (!best) {
+              const cm5 = cmAny;
+              if (cm5?.coordsChar) {
+                const p = cm5.coordsChar({ left: scRect.left + 16, top: scRect.top + 1 }, 'window');
+                if (p && typeof p.line === 'number') {
+                  for (const h of headings) { if (h.lineStart >= p.line) { best = h; break; } }
+                }
+              }
+            }
+            // If none found at/under top, do not change selection
+            if (best && best.id !== this.lastSyncedNodeId) {
+              this.lastSyncedNodeId = best.id;
+              this.hideAddButton();
+              const center = false;
+              this.suppressRevealUntilMs = Date.now() + 600;
+              this.selectMindmapNodeById(best.id, center);
+              // Ensure the node is visible; only center if offscreen
+              this.ensureMindmapNodeVisible(best.id);
+              this.currentSelectionDriver = 'scroll';
+              this.driverHoldUntilMs = Date.now() + 700;
+            }
+          } catch {}
+          ticking = false;
+        };
+        if (typeof window.requestAnimationFrame === 'function') {
+          window.requestAnimationFrame(run);
+        } else {
+          setTimeout(run, 16);
+        }
+      };
+      scroller.addEventListener('scroll', onScroll);
+      this.scrollSyncEl = scroller as HTMLElement;
+      this.scrollSyncHandler = onScroll;
+      this.register(() => scroller && scroller.removeEventListener('scroll', onScroll));
+    };
+    attachScrollSync();
   }
 
   private showAddButton(nodeId: string) {
@@ -904,10 +1222,24 @@ class MindmapView extends ItemView {
       const nodeEl = this.containerElDiv.querySelector(`jmnode[nodeid="${this.addButtonForNodeId}"]`) as HTMLElement | null;
       if (!nodeEl) return;
       const node = this.jm?.get_node?.(this.addButtonForNodeId);
+      const expanderEl = this.containerElDiv.querySelector(`jmexpander[nodeid="${this.addButtonForNodeId}"]`) as HTMLElement | null;
       const rect = nodeEl.getBoundingClientRect();
       const hostRect = this.containerElDiv.getBoundingClientRect();
       const isLeft = node && (node.direction === (window.jsMind?.direction?.left ?? 'left'));
-      const xAdd = isLeft ? rect.left - hostRect.left - 28 : rect.right - hostRect.left + 6;
+      const buttonSize = 22;
+      const gapBase = 8; // base gap from node/expander
+      let xAdd = isLeft ? rect.left - hostRect.left - (buttonSize + gapBase + 6) : rect.right - hostRect.left + gapBase + 6;
+      // If expander exists, place button beyond it to avoid overlap
+      if (expanderEl) {
+        const expRect = expanderEl.getBoundingClientRect();
+        if (!isLeft) {
+          const minLeft = expRect.right - hostRect.left + gapBase;
+          if (xAdd < minLeft) xAdd = minLeft;
+        } else {
+          const maxLeft = expRect.left - hostRect.left - (buttonSize + gapBase);
+          if (xAdd > maxLeft) xAdd = maxLeft;
+        }
+      }
       const btnH = (this.addButtonEl?.offsetHeight || 22);
       const centerYRaw = rect.top - hostRect.top + (rect.height - btnH) / 2;
       const centerY = Math.round(centerYRaw) - 3; // nudge up 1px for visual centering
@@ -917,7 +1249,7 @@ class MindmapView extends ItemView {
       this.addButtonEl.style.display = 'block';
       if (this.deleteButtonEl) {
         const gap = 4;
-        const xDel = isLeft ? xAdd - (22 + gap) : xAdd + (22 + gap);
+        const xDel = isLeft ? xAdd - (buttonSize + gap) : xAdd + (buttonSize + gap);
         this.deleteButtonEl.style.left = `${xDel}px`;
         this.deleteButtonEl.style.top = `${centerY}px`;
         this.deleteButtonEl.style.transform = '';
@@ -991,13 +1323,6 @@ class MindmapView extends ItemView {
     }
   }
 
-  private getSelectedHeading(): HeadingNode | null {
-    if (!this.jm) return null;
-    const node = this.jm.get_selected_node();
-    if (!node) return null;
-    const id = node.id as string;
-    return this.headingsCache.find(h => h.id === id) ?? null;
-  }
 
   private isMarkdownEditorFocused(mdView: MarkdownView): boolean {
     try {
@@ -1010,10 +1335,20 @@ class MindmapView extends ItemView {
     return false;
   }
 
+  private isAutoFollowEnabled(): boolean {
+    try {
+      return (this.plugin as any).settings?.autoFollow === true;
+    } catch {}
+    return false;
+  }
+
 
 }
 
 export default class MindmapPlugin extends Plugin {
+  private collapsedByFile: Record<string, string[]> = {};
+  public settings: { autoFollow: boolean } = { autoFollow: true };
+
   async onload() {
     // Minimal logic change (Option B): sanitize class tokens with whitespace
     // to avoid InvalidCharacterError when other plugins add class names with spaces.
@@ -1033,6 +1368,25 @@ export default class MindmapPlugin extends Plugin {
     } catch (e) {
       // noop
     }
+
+    // Load settings and persisted collapsed map
+    try {
+      const data = (await this.loadData()) as any;
+      if (data && typeof data === 'object') {
+        if (typeof data.autoFollow === 'boolean') this.settings.autoFollow = data.autoFollow;
+      }
+      if (data && typeof data === 'object' && data.collapsedByFile) {
+        const raw = data.collapsedByFile as Record<string, string[]>;
+        const cleaned: Record<string, string[]> = {};
+        for (const [fp, arr] of Object.entries(raw)) {
+          if (Array.isArray(arr)) {
+            const uniq = Array.from(new Set(arr.filter(v => typeof v === 'string' && v.length > 0)));
+            if (uniq.length > 0) cleaned[fp] = uniq;
+          }
+        }
+        this.collapsedByFile = cleaned;
+      }
+    } catch {}
 
     this.registerView(
       VIEW_TYPE_MINDMAP,
@@ -1064,10 +1418,62 @@ export default class MindmapPlugin extends Plugin {
         (view as any).jm && (view as any).jm.resize && (view as any).jm.resize();
       }
     });
+
+    // Settings tab
+    this.addSettingTab(new MindmapSettingTab(this.app, this));
   }
 
   onunload() {
     this.app.workspace.getLeavesOfType(VIEW_TYPE_MINDMAP).forEach(leaf => leaf.detach());
+  }
+
+  getCollapsedSet(filePath: string): Set<string> {
+    const arr = this.collapsedByFile[filePath] || [];
+    return new Set(arr);
+  }
+
+  async markCollapsed(filePath: string, nodeId: string) {
+    const set = this.getCollapsedSet(filePath);
+    set.add(nodeId);
+    if (set.size > 0) {
+      this.collapsedByFile[filePath] = Array.from(set);
+    } else {
+      delete this.collapsedByFile[filePath];
+    }
+    await this.saveData({ collapsedByFile: this.collapsedByFile, autoFollow: this.settings.autoFollow });
+  }
+
+  async unmarkCollapsed(filePath: string, nodeId: string) {
+    const set = this.getCollapsedSet(filePath);
+    set.delete(nodeId);
+    if (set.size > 0) {
+      this.collapsedByFile[filePath] = Array.from(set);
+    } else {
+      delete this.collapsedByFile[filePath];
+    }
+    await this.saveData({ collapsedByFile: this.collapsedByFile, autoFollow: this.settings.autoFollow });
+  }
+}
+
+class MindmapSettingTab extends PluginSettingTab {
+  plugin: MindmapPlugin;
+  constructor(app: App, plugin: MindmapPlugin) {
+    super(app, plugin);
+    this.plugin = plugin;
+  }
+  display(): void {
+    const { containerEl } = this;
+    containerEl.empty();
+    containerEl.createEl('h3', { text: 'Mindmap (jsMind) Settings' });
+    new Setting(containerEl)
+      .setName('Auto follow editor scroll')
+      .setDesc('When scrolling markdown, select the top heading in mindmap')
+      .addToggle(t => t
+        .setValue(this.plugin.settings.autoFollow)
+        .onChange(async (v) => {
+          this.plugin.settings.autoFollow = v;
+          await this.plugin.saveData({ collapsedByFile: this.plugin.collapsedByFile, autoFollow: this.plugin.settings.autoFollow });
+        }));
   }
 }
 
