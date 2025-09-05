@@ -138,40 +138,67 @@ function buildJsMindTreeFromHeadings(headings: HeadingNode[], fileName: string) 
 }
 
 class MindmapView extends ItemView {
-  private plugin: MindmapPlugin;
-  private file: TFile | null = null;
-  private containerElDiv: HTMLDivElement | null = null;
-  private jm: any | null = null;
+  // References to Obsidian/plugin and jsMind host
+  private plugin: MindmapPlugin;                      // owning plugin (for settings/persistence)
+  private file: TFile | null = null;                  // current markdown file shown in this view
+  private containerElDiv: HTMLDivElement | null = null; // mindmap container element
+  private jm: any | null = null;                      // jsMind instance
+
+  // Parsed markdown cache (structure used to build/update mindmap)
   private headingsCache: HeadingNode[] = [];
-  private suppressSync: boolean = false;
-  private lastSyncedNodeId: string | null = null;
-  private editorSyncIntervalId: number | null = null;
-  private suppressEditorSyncUntil: number = 0;
-  private prevViewport: { nodesTransform: string | null; canvasTransform: string | null } | null = null;
-  private allowCenterRoot: boolean = false;
-  private centerRootWrapped: boolean = false;
-  private addButtonEl: HTMLButtonElement | null = null;
-  private addButtonForNodeId: string | null = null;
-  private addButtonRAF: number | null = null;
-  private revealTimeoutId: number | null = null;
-  private lastDblClickAtMs: number = 0;
-  private deleteButtonEl: HTMLButtonElement | null = null;
-  private suppressProgrammaticNodeUpdate: boolean = false;
-  private isSuspended: boolean = false;
-  private pendingDirty: boolean = false;
+
+  // Selection and sync state (mindmap <-> markdown)
+  private suppressSync: boolean = false;              // guard to avoid feedback loops while selecting in jm
+  private lastSyncedNodeId: string | null = null;     // last node id driven into selection to dedupe work
+  private editorSyncIntervalId: number | null = null; // polling timer id for cursor-only movements
+  private suppressEditorSyncUntil: number = 0;        // timestamp to pause editor-driven sync briefly
+
+  // Viewport/centering management
+  private prevViewport: { nodesTransform: string | null; canvasTransform: string | null } | null = null; // saved transforms across re-render
+  private allowCenterRoot: boolean = false;           // only allow jm to center root when explicitly enabled
+  private centerRootWrapped: boolean = false;         // ensure we wrap jsMind center methods only once
+
+  // UI elements: quick actions (+ / −) and related timers
+  private addButtonEl: HTMLButtonElement | null = null; // floating + button element
+  private addButtonForNodeId: string | null = null;   // which node the buttons are currently attached to
+  private addButtonRAF: number | null = null;         // raf token for following node position
+  private revealTimeoutId: number | null = null;      // debounce for click-to-reveal in editor
+  private lastDblClickAtMs: number = 0;               // last dblclick to differentiate from single click
+  private deleteButtonEl: HTMLButtonElement | null = null; // floating − button element
+
+  // Visibility/suspension controls (skip heavy work when hidden/offscreen)
+  private isSuspended: boolean = false;               // whether view is currently suspended
+  private pendingDirty: boolean = false;              // if changes occurred while suspended, refresh on resume
+
+  // Inline editing sizer helpers (for adaptive jmnode width while editing)
   private editingSizerRAF: number | null = null;
   private editingSizerNodeEl: HTMLElement | null = null;
-  private idToStableKey: Map<string, string> = new Map();
-  private stableKeyToId: Map<string, string> = new Map();
-  private suppressRevealUntilMs: number = 0;
-  private suppressCursorSyncUntilMs2: number = 0; // suppress cursor-driven sync after scroll-driven
-  private suppressScrollSyncUntilMs: number = 0; // suppress scroll-driven sync after cursor-driven
-  private currentSelectionDriver: 'scroll' | 'cursor' | null = null;
-  private driverHoldUntilMs: number = 0;
-  private scrollSyncEl: HTMLElement | null = null;
-  private scrollSyncHandler: ((e: Event) => void) | null = null;
-  private scrollSyncLastRunMs: number = 0;
-  private scrollSyncPendingTimeoutId: number | null = null;
+
+  // Hover popup (node body preview)
+  private hoverPopupEl: HTMLDivElement | null = null; // popup element for showing immediate body text
+  private hoverPopupForNodeId: string | null = null;  // node id the popup is currently for
+  private hoverPopupRAF: number | null = null;        // raf token to follow transforms
+  private hoverHideTimeoutId: number | null = null;   // scheduled hide when crossing gap between node and popup
+
+  // Stable id mapping (parent chain + sibling index)
+  private idToStableKey: Map<string, string> = new Map(); // runtime id -> stable key
+  private stableKeyToId: Map<string, string> = new Map(); // stable key -> runtime id
+
+  // Arbitration windows between drivers (cursor vs scroll vs click)
+  private suppressRevealUntilMs: number = 0;          // after jm-driven selection, suppress reveal back to editor
+  private suppressCursorSyncUntilMs2: number = 0;     // suppress cursor-driven sync after scroll-driven
+  private suppressScrollSyncUntilMs: number = 0;      // suppress scroll-driven sync after cursor-driven
+  private currentSelectionDriver: 'scroll' | 'cursor' | null = null; // last active driver
+  private driverHoldUntilMs: number = 0;              // hold time to keep current driver in control
+
+  // Scroll sync (follow markdown scrolling)
+  private scrollSyncEl: HTMLElement | null = null;    // current scroller we listen to
+  private scrollSyncHandler: ((e: Event) => void) | null = null; // bound scroll handler
+  private scrollSyncLastRunMs: number = 0;            // throttle timestamp (ms) for scroll-driven sync
+  private scrollSyncPendingTimeoutId: number | null = null; // pending trailing call id
+
+  // Cached raw file text (for popup extraction and incremental diffs)
+  private lastFileContent: string = '';
   private getJsMindEventName(type: any, data: any): string {
     try {
       if (typeof type === 'string') return type;
@@ -500,6 +527,7 @@ class MindmapView extends ItemView {
     this.prevViewport = this.captureViewport();
 
     const content = await this.app.vault.read(this.file);
+    this.lastFileContent = content;
     this.headingsCache = computeHeadingSections(content);
     this.rebuildStableKeyIndex();
     const mind = buildJsMindTreeFromHeadings(this.headingsCache, this.file.name);
@@ -564,8 +592,8 @@ class MindmapView extends ItemView {
             }
             // Some builds of jsMind emit 'edit' on inline rename; also try 'update_node' as fallback
             if ((evt === 'edit' || evt === 'update_node' || evt === 'nodechanged' || evt === 'topic_change' || evt === 'textedit') && nodeIdFromEvent) {
-              if (this.suppressProgrammaticNodeUpdate) return;
-              if (!this.isMindmapEditingActive() && evt !== 'update_node') return;
+              // Only treat as a rename when inline editing is active inside jsMind
+              if (!this.isMindmapEditingActive()) return;
               const nodeId = nodeIdFromEvent;
               const newTitle: string = this.getEventNodeTopic(data).toString();
               this.renameHeadingInFile(nodeId, newTitle).catch(() => {});
@@ -608,7 +636,37 @@ class MindmapView extends ItemView {
               }, 200);
             }
           };
+          // Hover popup: show immediate body on jmnode hover
+          const overHandler = (ev: MouseEvent) => {
+            const t = ev.target as HTMLElement;
+            const nodeEl = t && (t.closest ? t.closest('jmnode') : null);
+            const nodeId = nodeEl?.getAttribute('nodeid') || '';
+            if (!nodeId) return;
+            if (this.isMindmapEditingActive()) return;
+            // Cancel pending hide when entering another node quickly
+            if (this.hoverHideTimeoutId != null) { try { window.clearTimeout(this.hoverHideTimeoutId); } catch {} this.hoverHideTimeoutId = null; }
+            this.showHoverPopup(nodeId);
+          };
+          const outHandler = (ev: MouseEvent) => {
+            const t = ev.target as HTMLElement;
+            const nodeEl = t && (t.closest ? t.closest('jmnode') : null);
+            if (!nodeEl) return;
+            const rel = ev.relatedTarget as HTMLElement | null;
+            // If moving into the popup, do not hide
+            if (rel && this.hoverPopupEl && (rel === this.hoverPopupEl || this.hoverPopupEl.contains(rel))) return;
+            if (rel && (rel === nodeEl || nodeEl.contains(rel))) return;
+            // Gap tolerance: delay hide to allow cursor to cross gap into popup or next node
+            if (this.hoverHideTimeoutId != null) { try { window.clearTimeout(this.hoverHideTimeoutId); } catch {} }
+            this.hoverHideTimeoutId = window.setTimeout(() => {
+              this.hoverHideTimeoutId = null;
+              // If mouse is now over popup, keep it
+              if (this.hoverPopupEl && this.hoverPopupEl.matches(':hover')) return;
+              this.hideHoverPopup();
+            }, 180);
+          };
           nodesContainer.addEventListener('click', handler);
+          nodesContainer.addEventListener('mouseover', overHandler as any);
+          nodesContainer.addEventListener('mouseout', outHandler as any);
           const dblHandler = (_ev: Event) => {
             this.lastDblClickAtMs = Date.now();
             if (this.revealTimeoutId != null) {
@@ -619,6 +677,8 @@ class MindmapView extends ItemView {
           };
           nodesContainer.addEventListener('dblclick', dblHandler);
           this.register(() => nodesContainer && nodesContainer.removeEventListener('click', handler));
+          this.register(() => nodesContainer && nodesContainer.removeEventListener('mouseover', overHandler as any));
+          this.register(() => nodesContainer && nodesContainer.removeEventListener('mouseout', outHandler as any));
           this.register(() => nodesContainer && nodesContainer.removeEventListener('dblclick', dblHandler));
         }
       };
@@ -637,6 +697,7 @@ class MindmapView extends ItemView {
     }
     try {
       const content = await this.app.vault.read(this.file);
+      this.lastFileContent = content;
       const nextHeadings = computeHeadingSections(content);
       await this.applyHeadingsDiff(this.headingsCache, nextHeadings);
       this.headingsCache = nextHeadings;
@@ -669,7 +730,7 @@ class MindmapView extends ItemView {
     for (const oldH of toRemove) {
       try {
         const exists = this.jm.get_node ? this.jm.get_node(oldH.id) : null;
-        if (exists) this.jm.remove_node(oldH.id);
+        if (exists) { try { this.jm.remove_node(oldH.id); } catch {} }
       } catch {}
     }
 
@@ -683,18 +744,20 @@ class MindmapView extends ItemView {
       return depth;
     };
     const resolveExistingParentId = (h: HeadingNode): string => {
-      // ascend until find an ancestor that exists in jm
-      let ancestorId: string | null = h.parentId ?? (firstNextH1 ? firstNextH1.id : rootId);
-      while (ancestorId) {
+      // Ascend using next-map relations until finding an ancestor existing in jm
+      // If none found or parent is null (e.g., first H1), fall back to current jm rootId
+      let ancestorId: string | null = h.parentId ?? null;
+      let guard = 0;
+      while (ancestorId && guard++ < 100) {
         try {
           const exists = this.jm.get_node ? this.jm.get_node(ancestorId) : null;
           if (exists) return ancestorId;
         } catch {}
-        const ancestor = ancestorId ? nextMap.get(ancestorId) : undefined;
+        const ancestor = nextMap.get(ancestorId);
         if (!ancestor) break;
-        ancestorId = ancestor.parentId ?? (firstNextH1 ? firstNextH1.id : rootId);
+        ancestorId = ancestor.parentId ?? null;
       }
-      return firstNextH1 ? firstNextH1.id : rootId;
+      return rootId;
     };
 
     // Add nodes (parents before children)
@@ -717,10 +780,8 @@ class MindmapView extends ItemView {
         const parentKey = resolveExistingParentId(newH);
         try {
           const exists = this.jm.get_node ? this.jm.get_node(newH.id) : null;
-          if (exists) {
-            this.jm.remove_node(newH.id);
-          }
-          this.jm.add_node(parentKey, newH.id, (newH.title && newH.title.trim()) ? newH.title : '新标题');
+          if (exists) { try { this.jm.remove_node(newH.id); } catch {} }
+          try { this.jm.add_node(parentKey, newH.id, (newH.title && newH.title.trim()) ? newH.title : '新标题'); } catch {}
         } catch {}
       }
     }
@@ -730,8 +791,7 @@ class MindmapView extends ItemView {
       const sel = this.jm.get_selected_node?.();
       const selId = sel?.id;
       if (selId && nextMap.has(selId)) {
-        this.suppressSync = true;
-        try { this.jm.select_node(selId); } finally { setTimeout(() => { this.suppressSync = false; }, 0); }
+        try { this.jm.select_node(selId); } catch {}
       }
     } catch {}
   }
@@ -1112,7 +1172,7 @@ class MindmapView extends ItemView {
       if (!this.jm || !this.containerElDiv) return;
       if (this.isMindmapEditingActive()) return;
       const node = this.jm.get_node?.(nodeId);
-      if (!node || node.isroot) {
+      if (!node) {
         this.hideAddButton();
         return;
       }
@@ -1143,7 +1203,7 @@ class MindmapView extends ItemView {
       }
       // Always bind to current nodeId (overwrite previous handler)
       this.addButtonEl!.onclick = (e) => { e.stopPropagation(); this.addChildUnder(nodeId); };
-      // create delete button alongside
+      // create delete button alongside (hidden for root)
       if (!this.deleteButtonEl) {
         const del = document.createElement('button');
         del.textContent = '−';
@@ -1185,6 +1245,10 @@ class MindmapView extends ItemView {
           }
         };
         this.addButtonRAF = window.requestAnimationFrame(tick);
+      }
+      // Root node: show only add, hide delete for safety
+      if (node.isroot && this.deleteButtonEl) {
+        this.deleteButtonEl.style.display = 'none';
       }
     } catch {}
   }
@@ -1296,6 +1360,155 @@ class MindmapView extends ItemView {
         this.deleteButtonEl.style.transform = '';
         this.deleteButtonEl.style.display = 'block';
       }
+      this.updateHoverPopupPosition();
+    } catch {}
+  }
+
+  private updateHoverPopupPosition() {
+    try {
+      if (!this.hoverPopupEl || !this.containerElDiv || !this.hoverPopupForNodeId) return;
+      const nodeEl = this.containerElDiv.querySelector(`jmnode[nodeid="${this.hoverPopupForNodeId}"]`) as HTMLElement | null;
+      if (!nodeEl) return;
+      const rect = nodeEl.getBoundingClientRect();
+      const hostRect = this.containerElDiv.getBoundingClientRect();
+      const node = this.jm?.get_node?.(this.hoverPopupForNodeId);
+      const isLeft = node && (node.direction === (window.jsMind?.direction?.left ?? 'left'));
+      const gap = 8;
+      const margin = 6;
+      const popupEl = this.hoverPopupEl as HTMLDivElement;
+      // Measure popup size safely (ensure measurable)
+      if (!popupEl.offsetWidth || !popupEl.offsetHeight || popupEl.style.display === 'none') {
+        popupEl.style.visibility = 'hidden';
+        popupEl.style.display = 'block';
+      }
+      const popupW = popupEl.offsetWidth || 220;
+      const popupH = popupEl.offsetHeight || 180;
+      // Horizontal placement (left/right of node), with overflow handling
+      let x = isLeft ? (rect.left - hostRect.left) - (popupW + gap) : (rect.right - hostRect.left) + gap;
+      if (!isLeft && (x + popupW > hostRect.width - margin)) {
+        x = (rect.left - hostRect.left) - (popupW + gap);
+      }
+      if (x < margin) x = margin;
+      // Check if popup would horizontally overlap the node (squeezed)
+      const nodeLeft = rect.left - hostRect.left;
+      const nodeRight = rect.right - hostRect.left;
+      const popupLeft = x;
+      const popupRight = x + popupW;
+      const overlapsHorizontally = !(popupRight <= nodeLeft - gap || popupLeft >= nodeRight + gap);
+      // Default vertical alignment: align with node top
+      let y: number = rect.top - hostRect.top;
+      // If horizontally overlapping (squeezed), reposition vertically to avoid covering the node
+      if (overlapsHorizontally) {
+        const spaceBelow = hostRect.bottom - rect.bottom - margin;
+        const spaceAbove = rect.top - hostRect.top - margin;
+        if (spaceBelow >= popupH + gap || spaceBelow >= spaceAbove) {
+          y = rect.bottom - hostRect.top + gap; // place below node
+        } else {
+          y = rect.top - hostRect.top - popupH - gap; // place above node
+          if (y < margin) y = margin;
+        }
+      }
+      popupEl.style.left = `${x}px`;
+      popupEl.style.top = `${Math.max(0, y)}px`;
+      popupEl.style.display = 'block';
+      popupEl.style.visibility = 'visible';
+    } catch {}
+  }
+
+  private extractNodeImmediateBody(nodeId: string): string {
+    try {
+      const content = this.lastFileContent || '';
+      if (!content) return '';
+      const headings = this.headingsCache && this.headingsCache.length ? this.headingsCache : computeHeadingSections(content);
+      const idx = headings.findIndex(h => h.id === nodeId);
+      if (idx === -1) return '';
+      const h = headings[idx];
+      const startBody = Math.min(content.length, Math.max(0, h.headingTextEnd + 1));
+      const next = headings[idx + 1];
+      const endBody = next ? Math.max(startBody, next.start - 1) : Math.max(startBody, content.length);
+      const raw = content.slice(startBody, endBody);
+      // Trim leading blank lines and trailing spaces
+      return raw.replace(/^\s*\n/, '').trimEnd();
+    } catch { return ''; }
+  }
+
+  private showHoverPopup(nodeId: string) {
+    try {
+      if (!this.containerElDiv) return;
+      if (this.isMindmapEditingActive()) return;
+      const body = this.extractNodeImmediateBody(nodeId);
+      if (!body || body.trim().length === 0) { this.hideHoverPopup(); return; }
+      let el = this.hoverPopupEl;
+      if (!el) {
+        el = document.createElement('div');
+        el.style.position = 'absolute';
+        el.style.zIndex = '6';
+        el.style.minWidth = '220px';
+        el.style.maxWidth = '420px';
+        el.style.maxHeight = '240px';
+        el.style.overflow = 'auto';
+        el.style.padding = '8px 10px';
+        el.style.borderRadius = '6px';
+        el.style.boxShadow = '0 8px 24px rgba(0,0,0,0.25)';
+        el.style.border = '1px solid rgba(255,255,255,0.25)';
+        el.style.background = 'rgba(255, 255, 255, 0.75)';
+        (el.style as any).backdropFilter = 'blur(15px)';
+        (el.style as any).webkitBackdropFilter = 'blur(15px)';
+        el.style.backgroundClip = 'padding-box';
+        el.style.color = 'var(--text-normal)';
+        el.style.whiteSpace = 'pre-wrap';
+        // Enable interactions so users can hover/scroll inside popup
+        el.style.pointerEvents = 'auto';
+        this.containerElDiv.appendChild(el);
+        this.hoverPopupEl = el;
+      }
+      // Keep popup visible when mouse enters the popup area; hide on leave only if not entering a node
+      try {
+        const popup = this.hoverPopupEl!;
+        if (!(popup as any).__mm_popup_bound) {
+          popup.addEventListener('mouseleave', (ev: MouseEvent) => {
+            const rel = ev.relatedTarget as HTMLElement | null;
+            const intoNode = rel && (rel.closest ? rel.closest('jmnode') : null);
+            if (intoNode) return;
+            // Delay slightly to tolerate small gaps leaving popup into another node
+            if (this.hoverHideTimeoutId != null) { try { window.clearTimeout(this.hoverHideTimeoutId); } catch {} }
+            this.hoverHideTimeoutId = window.setTimeout(() => {
+              this.hoverHideTimeoutId = null;
+              this.hideHoverPopup();
+            }, 150);
+          });
+          (popup as any).__mm_popup_bound = true;
+        }
+      } catch {}
+      // Re-append if lost on refresh
+      if (this.hoverPopupEl && this.hoverPopupEl.parentElement !== this.containerElDiv) {
+        this.containerElDiv.appendChild(this.hoverPopupEl);
+      }
+      // Cancel any pending hide when (re)showing the popup
+      if (this.hoverHideTimeoutId != null) { try { window.clearTimeout(this.hoverHideTimeoutId); } catch {} this.hoverHideTimeoutId = null; }
+      this.hoverPopupForNodeId = nodeId;
+      this.hoverPopupEl!.textContent = body.trim();
+      this.updateHoverPopupPosition();
+      // Follow transforms while visible
+      if (this.hoverPopupRAF == null) {
+        const tick = () => {
+          this.updateHoverPopupPosition();
+          if (this.hoverPopupEl && this.hoverPopupEl.style.display !== 'none') {
+            this.hoverPopupRAF = window.requestAnimationFrame(tick);
+          } else {
+            if (this.hoverPopupRAF != null) { try { window.cancelAnimationFrame(this.hoverPopupRAF); } catch {}; this.hoverPopupRAF = null; }
+          }
+        };
+        this.hoverPopupRAF = window.requestAnimationFrame(tick);
+      }
+    } catch {}
+  }
+
+  private hideHoverPopup() {
+    try {
+      if (this.hoverPopupEl) this.hoverPopupEl.style.display = 'none';
+      this.hoverPopupForNodeId = null;
+      if (this.hoverPopupRAF != null) { try { window.cancelAnimationFrame(this.hoverPopupRAF); } catch {}; this.hoverPopupRAF = null; }
     } catch {}
   }
 
@@ -1333,6 +1546,7 @@ class MindmapView extends ItemView {
       if (!target) return;
       const lineIdx = target.lineStart;
       if (lineIdx < 0 || lineIdx >= lines.length) return;
+      let nextLine = lines[lineIdx];
       if (target.style === 'atx') {
         const original = lines[lineIdx] ?? '';
         // Preserve leading hashes, whitespace, and any trailing spaces/closing #s
@@ -1340,27 +1554,27 @@ class MindmapView extends ItemView {
         if (m) {
           const leading = m[1] + m[2];
           const trailing = m[4] ?? '';
-          lines[lineIdx] = `${leading}${safeTitle}${trailing}`;
+          nextLine = `${leading}${safeTitle}${trailing}`;
         } else {
           // Fallback: rebuild minimally
           const hashes = '#'.repeat(Math.min(Math.max(target.level, 1), 6));
-          lines[lineIdx] = `${hashes} ${safeTitle}`;
+          nextLine = `${hashes} ${safeTitle}`;
         }
       } else {
         // setext: change only the title line; underline remains
-        lines[lineIdx] = safeTitle;
+        nextLine = safeTitle;
       }
+      // Skip write if no change
+      if (lines[lineIdx] === nextLine) return;
+      lines[lineIdx] = nextLine;
       const updated = lines.join('\n');
-      this.suppressProgrammaticNodeUpdate = true;
       await this.app.vault.modify(this.file, updated);
       // ensure jsMind node shows placeholder if needed
       if (this.jm && nextTitleRaw.trim().length === 0) {
         try { this.jm.update_node(nodeId, safeTitle); } catch {}
       }
-      // release guard shortly after modify finishes
-      window.setTimeout(() => { this.suppressProgrammaticNodeUpdate = false; }, 300);
     } catch {
-      this.suppressProgrammaticNodeUpdate = false;
+      // ignore
     }
   }
 

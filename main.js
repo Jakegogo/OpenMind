@@ -142,41 +142,88 @@ function buildJsMindTreeFromHeadings(headings, fileName) {
 var MindmapView = class extends import_obsidian.ItemView {
   constructor(leaf, plugin) {
     super(leaf);
+    // owning plugin (for settings/persistence)
     this.file = null;
+    // current markdown file shown in this view
     this.containerElDiv = null;
+    // mindmap container element
     this.jm = null;
+    // jsMind instance
+    // Parsed markdown cache (structure used to build/update mindmap)
     this.headingsCache = [];
+    // Selection and sync state (mindmap <-> markdown)
     this.suppressSync = false;
+    // guard to avoid feedback loops while selecting in jm
     this.lastSyncedNodeId = null;
+    // last node id driven into selection to dedupe work
     this.editorSyncIntervalId = null;
+    // polling timer id for cursor-only movements
     this.suppressEditorSyncUntil = 0;
+    // timestamp to pause editor-driven sync briefly
+    // Viewport/centering management
     this.prevViewport = null;
+    // saved transforms across re-render
     this.allowCenterRoot = false;
+    // only allow jm to center root when explicitly enabled
     this.centerRootWrapped = false;
+    // ensure we wrap jsMind center methods only once
+    // UI elements: quick actions (+ / −) and related timers
     this.addButtonEl = null;
+    // floating + button element
     this.addButtonForNodeId = null;
+    // which node the buttons are currently attached to
     this.addButtonRAF = null;
+    // raf token for following node position
     this.revealTimeoutId = null;
+    // debounce for click-to-reveal in editor
     this.lastDblClickAtMs = 0;
+    // last dblclick to differentiate from single click
     this.deleteButtonEl = null;
-    this.suppressProgrammaticNodeUpdate = false;
+    // floating − button element
+    // Visibility/suspension controls (skip heavy work when hidden/offscreen)
     this.isSuspended = false;
+    // whether view is currently suspended
     this.pendingDirty = false;
+    // if changes occurred while suspended, refresh on resume
+    // Inline editing sizer helpers (for adaptive jmnode width while editing)
     this.editingSizerRAF = null;
     this.editingSizerNodeEl = null;
+    // Hover popup (node body preview)
+    this.hoverPopupEl = null;
+    // popup element for showing immediate body text
+    this.hoverPopupForNodeId = null;
+    // node id the popup is currently for
+    this.hoverPopupRAF = null;
+    // raf token to follow transforms
+    this.hoverHideTimeoutId = null;
+    // scheduled hide when crossing gap between node and popup
+    // Stable id mapping (parent chain + sibling index)
     this.idToStableKey = /* @__PURE__ */ new Map();
+    // runtime id -> stable key
     this.stableKeyToId = /* @__PURE__ */ new Map();
+    // stable key -> runtime id
+    // Arbitration windows between drivers (cursor vs scroll vs click)
     this.suppressRevealUntilMs = 0;
+    // after jm-driven selection, suppress reveal back to editor
     this.suppressCursorSyncUntilMs2 = 0;
     // suppress cursor-driven sync after scroll-driven
     this.suppressScrollSyncUntilMs = 0;
     // suppress scroll-driven sync after cursor-driven
     this.currentSelectionDriver = null;
+    // last active driver
     this.driverHoldUntilMs = 0;
+    // hold time to keep current driver in control
+    // Scroll sync (follow markdown scrolling)
     this.scrollSyncEl = null;
+    // current scroller we listen to
     this.scrollSyncHandler = null;
+    // bound scroll handler
     this.scrollSyncLastRunMs = 0;
+    // throttle timestamp (ms) for scroll-driven sync
     this.scrollSyncPendingTimeoutId = null;
+    // pending trailing call id
+    // Cached raw file text (for popup extraction and incremental diffs)
+    this.lastFileContent = "";
     this.plugin = plugin;
   }
   getJsMindEventName(type, data) {
@@ -489,6 +536,7 @@ var MindmapView = class extends import_obsidian.ItemView {
     })();
     this.prevViewport = this.captureViewport();
     const content = await this.app.vault.read(this.file);
+    this.lastFileContent = content;
     this.headingsCache = computeHeadingSections(content);
     this.rebuildStableKeyIndex();
     const mind = buildJsMindTreeFromHeadings(this.headingsCache, this.file.name);
@@ -556,8 +604,7 @@ var MindmapView = class extends import_obsidian.ItemView {
               }, 200);
             }
             if ((evt === "edit" || evt === "update_node" || evt === "nodechanged" || evt === "topic_change" || evt === "textedit") && nodeIdFromEvent) {
-              if (this.suppressProgrammaticNodeUpdate) return;
-              if (!this.isMindmapEditingActive() && evt !== "update_node") return;
+              if (!this.isMindmapEditingActive()) return;
               const nodeId = nodeIdFromEvent;
               const newTitle = this.getEventNodeTopic(data).toString();
               this.renameHeadingInFile(nodeId, newTitle).catch(() => {
@@ -604,7 +651,43 @@ var MindmapView = class extends import_obsidian.ItemView {
               }, 200);
             }
           };
+          const overHandler = (ev) => {
+            const t = ev.target;
+            const nodeEl = t && (t.closest ? t.closest("jmnode") : null);
+            const nodeId = nodeEl?.getAttribute("nodeid") || "";
+            if (!nodeId) return;
+            if (this.isMindmapEditingActive()) return;
+            if (this.hoverHideTimeoutId != null) {
+              try {
+                window.clearTimeout(this.hoverHideTimeoutId);
+              } catch {
+              }
+              this.hoverHideTimeoutId = null;
+            }
+            this.showHoverPopup(nodeId);
+          };
+          const outHandler = (ev) => {
+            const t = ev.target;
+            const nodeEl = t && (t.closest ? t.closest("jmnode") : null);
+            if (!nodeEl) return;
+            const rel = ev.relatedTarget;
+            if (rel && this.hoverPopupEl && (rel === this.hoverPopupEl || this.hoverPopupEl.contains(rel))) return;
+            if (rel && (rel === nodeEl || nodeEl.contains(rel))) return;
+            if (this.hoverHideTimeoutId != null) {
+              try {
+                window.clearTimeout(this.hoverHideTimeoutId);
+              } catch {
+              }
+            }
+            this.hoverHideTimeoutId = window.setTimeout(() => {
+              this.hoverHideTimeoutId = null;
+              if (this.hoverPopupEl && this.hoverPopupEl.matches(":hover")) return;
+              this.hideHoverPopup();
+            }, 180);
+          };
           nodesContainer.addEventListener("click", handler);
+          nodesContainer.addEventListener("mouseover", overHandler);
+          nodesContainer.addEventListener("mouseout", outHandler);
           const dblHandler = (_ev) => {
             this.lastDblClickAtMs = Date.now();
             if (this.revealTimeoutId != null) {
@@ -614,6 +697,8 @@ var MindmapView = class extends import_obsidian.ItemView {
           };
           nodesContainer.addEventListener("dblclick", dblHandler);
           this.register(() => nodesContainer && nodesContainer.removeEventListener("click", handler));
+          this.register(() => nodesContainer && nodesContainer.removeEventListener("mouseover", overHandler));
+          this.register(() => nodesContainer && nodesContainer.removeEventListener("mouseout", outHandler));
           this.register(() => nodesContainer && nodesContainer.removeEventListener("dblclick", dblHandler));
         }
       };
@@ -632,6 +717,7 @@ var MindmapView = class extends import_obsidian.ItemView {
     }
     try {
       const content = await this.app.vault.read(this.file);
+      this.lastFileContent = content;
       const nextHeadings = computeHeadingSections(content);
       await this.applyHeadingsDiff(this.headingsCache, nextHeadings);
       this.headingsCache = nextHeadings;
@@ -659,7 +745,12 @@ var MindmapView = class extends import_obsidian.ItemView {
     for (const oldH of toRemove) {
       try {
         const exists = this.jm.get_node ? this.jm.get_node(oldH.id) : null;
-        if (exists) this.jm.remove_node(oldH.id);
+        if (exists) {
+          try {
+            this.jm.remove_node(oldH.id);
+          } catch {
+          }
+        }
       } catch {
       }
     }
@@ -673,18 +764,19 @@ var MindmapView = class extends import_obsidian.ItemView {
       return depth;
     };
     const resolveExistingParentId = (h) => {
-      let ancestorId = h.parentId ?? (firstNextH1 ? firstNextH1.id : rootId);
-      while (ancestorId) {
+      let ancestorId = h.parentId ?? null;
+      let guard = 0;
+      while (ancestorId && guard++ < 100) {
         try {
           const exists = this.jm.get_node ? this.jm.get_node(ancestorId) : null;
           if (exists) return ancestorId;
         } catch {
         }
-        const ancestor = ancestorId ? nextMap.get(ancestorId) : void 0;
+        const ancestor = nextMap.get(ancestorId);
         if (!ancestor) break;
-        ancestorId = ancestor.parentId ?? (firstNextH1 ? firstNextH1.id : rootId);
+        ancestorId = ancestor.parentId ?? null;
       }
-      return firstNextH1 ? firstNextH1.id : rootId;
+      return rootId;
     };
     const toAdd = next.filter((h) => !prevMap.has(h.id)).sort((a, b) => getNextDepth(a) - getNextDepth(b));
     for (const newH of toAdd) {
@@ -710,9 +802,15 @@ var MindmapView = class extends import_obsidian.ItemView {
         try {
           const exists = this.jm.get_node ? this.jm.get_node(newH.id) : null;
           if (exists) {
-            this.jm.remove_node(newH.id);
+            try {
+              this.jm.remove_node(newH.id);
+            } catch {
+            }
           }
-          this.jm.add_node(parentKey, newH.id, newH.title && newH.title.trim() ? newH.title : "\u65B0\u6807\u9898");
+          try {
+            this.jm.add_node(parentKey, newH.id, newH.title && newH.title.trim() ? newH.title : "\u65B0\u6807\u9898");
+          } catch {
+          }
         } catch {
         }
       }
@@ -721,13 +819,9 @@ var MindmapView = class extends import_obsidian.ItemView {
       const sel = this.jm.get_selected_node?.();
       const selId = sel?.id;
       if (selId && nextMap.has(selId)) {
-        this.suppressSync = true;
         try {
           this.jm.select_node(selId);
-        } finally {
-          setTimeout(() => {
-            this.suppressSync = false;
-          }, 0);
+        } catch {
         }
       }
     } catch {
@@ -1157,7 +1251,7 @@ var MindmapView = class extends import_obsidian.ItemView {
       if (!this.jm || !this.containerElDiv) return;
       if (this.isMindmapEditingActive()) return;
       const node = this.jm.get_node?.(nodeId);
-      if (!node || node.isroot) {
+      if (!node) {
         this.hideAddButton();
         return;
       }
@@ -1231,6 +1325,9 @@ var MindmapView = class extends import_obsidian.ItemView {
           }
         };
         this.addButtonRAF = window.requestAnimationFrame(tick);
+      }
+      if (node.isroot && this.deleteButtonEl) {
+        this.deleteButtonEl.style.display = "none";
       }
     } catch {
     }
@@ -1354,6 +1451,173 @@ var MindmapView = class extends import_obsidian.ItemView {
         this.deleteButtonEl.style.transform = "";
         this.deleteButtonEl.style.display = "block";
       }
+      this.updateHoverPopupPosition();
+    } catch {
+    }
+  }
+  updateHoverPopupPosition() {
+    try {
+      if (!this.hoverPopupEl || !this.containerElDiv || !this.hoverPopupForNodeId) return;
+      const nodeEl = this.containerElDiv.querySelector(`jmnode[nodeid="${this.hoverPopupForNodeId}"]`);
+      if (!nodeEl) return;
+      const rect = nodeEl.getBoundingClientRect();
+      const hostRect = this.containerElDiv.getBoundingClientRect();
+      const node = this.jm?.get_node?.(this.hoverPopupForNodeId);
+      const isLeft = node && node.direction === (window.jsMind?.direction?.left ?? "left");
+      const gap = 8;
+      const margin = 6;
+      const popupEl = this.hoverPopupEl;
+      if (!popupEl.offsetWidth || !popupEl.offsetHeight || popupEl.style.display === "none") {
+        popupEl.style.visibility = "hidden";
+        popupEl.style.display = "block";
+      }
+      const popupW = popupEl.offsetWidth || 220;
+      const popupH = popupEl.offsetHeight || 180;
+      let x = isLeft ? rect.left - hostRect.left - (popupW + gap) : rect.right - hostRect.left + gap;
+      if (!isLeft && x + popupW > hostRect.width - margin) {
+        x = rect.left - hostRect.left - (popupW + gap);
+      }
+      if (x < margin) x = margin;
+      const nodeLeft = rect.left - hostRect.left;
+      const nodeRight = rect.right - hostRect.left;
+      const popupLeft = x;
+      const popupRight = x + popupW;
+      const overlapsHorizontally = !(popupRight <= nodeLeft - gap || popupLeft >= nodeRight + gap);
+      let y = rect.top - hostRect.top;
+      if (overlapsHorizontally) {
+        const spaceBelow = hostRect.bottom - rect.bottom - margin;
+        const spaceAbove = rect.top - hostRect.top - margin;
+        if (spaceBelow >= popupH + gap || spaceBelow >= spaceAbove) {
+          y = rect.bottom - hostRect.top + gap;
+        } else {
+          y = rect.top - hostRect.top - popupH - gap;
+          if (y < margin) y = margin;
+        }
+      }
+      popupEl.style.left = `${x}px`;
+      popupEl.style.top = `${Math.max(0, y)}px`;
+      popupEl.style.display = "block";
+      popupEl.style.visibility = "visible";
+    } catch {
+    }
+  }
+  extractNodeImmediateBody(nodeId) {
+    try {
+      const content = this.lastFileContent || "";
+      if (!content) return "";
+      const headings = this.headingsCache && this.headingsCache.length ? this.headingsCache : computeHeadingSections(content);
+      const idx = headings.findIndex((h2) => h2.id === nodeId);
+      if (idx === -1) return "";
+      const h = headings[idx];
+      const startBody = Math.min(content.length, Math.max(0, h.headingTextEnd + 1));
+      const next = headings[idx + 1];
+      const endBody = next ? Math.max(startBody, next.start - 1) : Math.max(startBody, content.length);
+      const raw = content.slice(startBody, endBody);
+      return raw.replace(/^\s*\n/, "").trimEnd();
+    } catch {
+      return "";
+    }
+  }
+  showHoverPopup(nodeId) {
+    try {
+      if (!this.containerElDiv) return;
+      if (this.isMindmapEditingActive()) return;
+      const body = this.extractNodeImmediateBody(nodeId);
+      if (!body || body.trim().length === 0) {
+        this.hideHoverPopup();
+        return;
+      }
+      let el = this.hoverPopupEl;
+      if (!el) {
+        el = document.createElement("div");
+        el.style.position = "absolute";
+        el.style.zIndex = "6";
+        el.style.minWidth = "220px";
+        el.style.maxWidth = "420px";
+        el.style.maxHeight = "240px";
+        el.style.overflow = "auto";
+        el.style.padding = "8px 10px";
+        el.style.borderRadius = "6px";
+        el.style.boxShadow = "0 8px 24px rgba(0,0,0,0.25)";
+        el.style.border = "1px solid rgba(255,255,255,0.25)";
+        el.style.background = "rgba(255, 255, 255, 0.75)";
+        el.style.backdropFilter = "blur(15px)";
+        el.style.webkitBackdropFilter = "blur(15px)";
+        el.style.backgroundClip = "padding-box";
+        el.style.color = "var(--text-normal)";
+        el.style.whiteSpace = "pre-wrap";
+        el.style.pointerEvents = "auto";
+        this.containerElDiv.appendChild(el);
+        this.hoverPopupEl = el;
+      }
+      try {
+        const popup = this.hoverPopupEl;
+        if (!popup.__mm_popup_bound) {
+          popup.addEventListener("mouseleave", (ev) => {
+            const rel = ev.relatedTarget;
+            const intoNode = rel && (rel.closest ? rel.closest("jmnode") : null);
+            if (intoNode) return;
+            if (this.hoverHideTimeoutId != null) {
+              try {
+                window.clearTimeout(this.hoverHideTimeoutId);
+              } catch {
+              }
+            }
+            this.hoverHideTimeoutId = window.setTimeout(() => {
+              this.hoverHideTimeoutId = null;
+              this.hideHoverPopup();
+            }, 150);
+          });
+          popup.__mm_popup_bound = true;
+        }
+      } catch {
+      }
+      if (this.hoverPopupEl && this.hoverPopupEl.parentElement !== this.containerElDiv) {
+        this.containerElDiv.appendChild(this.hoverPopupEl);
+      }
+      if (this.hoverHideTimeoutId != null) {
+        try {
+          window.clearTimeout(this.hoverHideTimeoutId);
+        } catch {
+        }
+        this.hoverHideTimeoutId = null;
+      }
+      this.hoverPopupForNodeId = nodeId;
+      this.hoverPopupEl.textContent = body.trim();
+      this.updateHoverPopupPosition();
+      if (this.hoverPopupRAF == null) {
+        const tick = () => {
+          this.updateHoverPopupPosition();
+          if (this.hoverPopupEl && this.hoverPopupEl.style.display !== "none") {
+            this.hoverPopupRAF = window.requestAnimationFrame(tick);
+          } else {
+            if (this.hoverPopupRAF != null) {
+              try {
+                window.cancelAnimationFrame(this.hoverPopupRAF);
+              } catch {
+              }
+              ;
+              this.hoverPopupRAF = null;
+            }
+          }
+        };
+        this.hoverPopupRAF = window.requestAnimationFrame(tick);
+      }
+    } catch {
+    }
+  }
+  hideHoverPopup() {
+    try {
+      if (this.hoverPopupEl) this.hoverPopupEl.style.display = "none";
+      this.hoverPopupForNodeId = null;
+      if (this.hoverPopupRAF != null) {
+        try {
+          window.cancelAnimationFrame(this.hoverPopupRAF);
+        } catch {
+        }
+        ;
+        this.hoverPopupRAF = null;
+      }
     } catch {
     }
   }
@@ -1390,22 +1654,24 @@ var MindmapView = class extends import_obsidian.ItemView {
       if (!target) return;
       const lineIdx = target.lineStart;
       if (lineIdx < 0 || lineIdx >= lines.length) return;
+      let nextLine = lines[lineIdx];
       if (target.style === "atx") {
         const original = lines[lineIdx] ?? "";
         const m = original.match(/^(#{1,6})([ \t]+)(.*?)([ \t#]*)$/);
         if (m) {
           const leading = m[1] + m[2];
           const trailing = m[4] ?? "";
-          lines[lineIdx] = `${leading}${safeTitle}${trailing}`;
+          nextLine = `${leading}${safeTitle}${trailing}`;
         } else {
           const hashes = "#".repeat(Math.min(Math.max(target.level, 1), 6));
-          lines[lineIdx] = `${hashes} ${safeTitle}`;
+          nextLine = `${hashes} ${safeTitle}`;
         }
       } else {
-        lines[lineIdx] = safeTitle;
+        nextLine = safeTitle;
       }
+      if (lines[lineIdx] === nextLine) return;
+      lines[lineIdx] = nextLine;
       const updated = lines.join("\n");
-      this.suppressProgrammaticNodeUpdate = true;
       await this.app.vault.modify(this.file, updated);
       if (this.jm && nextTitleRaw.trim().length === 0) {
         try {
@@ -1413,11 +1679,7 @@ var MindmapView = class extends import_obsidian.ItemView {
         } catch {
         }
       }
-      window.setTimeout(() => {
-        this.suppressProgrammaticNodeUpdate = false;
-      }, 300);
     } catch {
-      this.suppressProgrammaticNodeUpdate = false;
     }
   }
   isMarkdownEditorFocused(mdView) {
