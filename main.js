@@ -326,6 +326,31 @@ var MindmapView = class extends import_obsidian.ItemView {
         `;
         document.head.appendChild(st);
       }
+      const popupCssId = "obsidian-jsmind-popup-style";
+      if (!document.getElementById(popupCssId)) {
+        const st2 = document.createElement("style");
+        st2.id = popupCssId;
+        st2.textContent = `
+          .mm-popup { padding: 4px 6px; }
+          .mm-popup.markdown-rendered { line-height: 1.4; }
+          .mm-popup.markdown-rendered p,
+          .mm-popup.markdown-rendered ul,
+          .mm-popup.markdown-rendered ol,
+          .mm-popup.markdown-rendered pre,
+          .mm-popup.markdown-rendered blockquote,
+          .mm-popup.markdown-rendered table,
+          .mm-popup.markdown-rendered h1,
+          .mm-popup.markdown-rendered h2,
+          .mm-popup.markdown-rendered h3,
+          .mm-popup.markdown-rendered h4,
+          .mm-popup.markdown-rendered h5,
+          .mm-popup.markdown-rendered h6 { margin: 0.25em 0; }
+          .mm-popup.markdown-rendered ul,
+          .mm-popup.markdown-rendered ol { padding-left: 1.1em; }
+          .mm-popup.markdown-rendered pre { padding: 4px 6px; }
+        `;
+        document.head.appendChild(st2);
+      }
     } catch {
     }
     const toolbar = this.contentEl.createDiv({ cls: "mm-toolbar" });
@@ -1530,17 +1555,24 @@ var MindmapView = class extends import_obsidian.ItemView {
       let el = this.hoverPopupEl;
       if (!el) {
         el = document.createElement("div");
+        try {
+          el.classList.add("mm-popup");
+        } catch {
+        }
         el.style.position = "absolute";
         el.style.zIndex = "6";
         el.style.minWidth = "220px";
         el.style.maxWidth = "420px";
         el.style.maxHeight = "240px";
         el.style.overflow = "auto";
-        el.style.padding = "8px 10px";
+        el.style.padding = "4px 6px";
         el.style.borderRadius = "6px";
         el.style.boxShadow = "0 8px 24px rgba(0,0,0,0.25)";
-        el.style.border = "1px solid rgba(255,255,255,0.25)";
-        el.style.background = "rgba(255, 255, 255, 0.75)";
+        {
+          const isDark = document.body.classList.contains("theme-dark");
+          el.style.border = isDark ? "1px solid rgba(255,255,255,0.18)" : "1px solid rgba(0,0,0,0.12)";
+          el.style.background = isDark ? "rgba(30,30,30,0.68)" : "rgba(255,255,255,0.85)";
+        }
         el.style.backdropFilter = "blur(15px)";
         el.style.webkitBackdropFilter = "blur(15px)";
         el.style.backgroundClip = "padding-box";
@@ -1551,9 +1583,15 @@ var MindmapView = class extends import_obsidian.ItemView {
         this.hoverPopupEl = el;
       }
       try {
-        const popup = this.hoverPopupEl;
-        if (!popup.__mm_popup_bound) {
-          popup.addEventListener("mouseleave", (ev) => {
+        const isDarkNow = document.body.classList.contains("theme-dark");
+        this.hoverPopupEl.style.border = isDarkNow ? "1px solid rgba(255,255,255,0.18)" : "1px solid rgba(0,0,0,0.12)";
+        this.hoverPopupEl.style.background = isDarkNow ? "rgba(30,30,30,0.68)" : "rgba(255,255,255,0.85)";
+      } catch {
+      }
+      try {
+        const popup2 = this.hoverPopupEl;
+        if (!popup2.__mm_popup_bound) {
+          popup2.addEventListener("mouseleave", (ev) => {
             const rel = ev.relatedTarget;
             const intoNode = rel && (rel.closest ? rel.closest("jmnode") : null);
             if (intoNode) return;
@@ -1568,7 +1606,7 @@ var MindmapView = class extends import_obsidian.ItemView {
               this.hideHoverPopup();
             }, 150);
           });
-          popup.__mm_popup_bound = true;
+          popup2.__mm_popup_bound = true;
         }
       } catch {
       }
@@ -1583,7 +1621,18 @@ var MindmapView = class extends import_obsidian.ItemView {
         this.hoverHideTimeoutId = null;
       }
       this.hoverPopupForNodeId = nodeId;
-      this.hoverPopupEl.textContent = body.trim();
+      const popup = this.hoverPopupEl;
+      try {
+        popup.classList.add("markdown-rendered");
+      } catch {
+      }
+      popup.style.whiteSpace = "normal";
+      popup.innerHTML = "";
+      try {
+        import_obsidian.MarkdownRenderer.renderMarkdown(body.trim(), popup, this.file?.path ?? "", this.plugin);
+      } catch {
+        popup.textContent = body.trim();
+      }
       this.updateHoverPopupPosition();
       if (this.hoverPopupRAF == null) {
         const tick = () => {
