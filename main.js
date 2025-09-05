@@ -331,7 +331,8 @@ var MindmapView = class extends import_obsidian.ItemView {
         const st2 = document.createElement("style");
         st2.id = popupCssId;
         st2.textContent = `
-          .mm-popup { padding: 4px 6px; }
+          .mm-popup { padding: 4px 6px; user-select: text; -webkit-user-select: text; }
+          .mm-popup * { user-select: text; -webkit-user-select: text; }
           .mm-popup.markdown-rendered { line-height: 1.4; }
           .mm-popup.markdown-rendered p,
           .mm-popup.markdown-rendered ul,
@@ -1579,6 +1580,18 @@ var MindmapView = class extends import_obsidian.ItemView {
         el.style.color = "var(--text-normal)";
         el.style.whiteSpace = "pre-wrap";
         el.style.pointerEvents = "auto";
+        ;
+        el.style.userSelect = "text";
+        ;
+        el.style.webkitUserSelect = "text";
+        try {
+          const stop = (ev) => ev.stopPropagation();
+          el.addEventListener("mousedown", stop);
+          el.addEventListener("mouseup", stop);
+          el.addEventListener("click", stop);
+          el.addEventListener("dblclick", stop);
+        } catch {
+        }
         this.containerElDiv.appendChild(el);
         this.hoverPopupEl = el;
       }

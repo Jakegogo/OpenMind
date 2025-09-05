@@ -305,7 +305,8 @@ class MindmapView extends ItemView {
         const st2 = document.createElement('style');
         st2.id = popupCssId;
         st2.textContent = `
-          .mm-popup { padding: 4px 6px; }
+          .mm-popup { padding: 4px 6px; user-select: text; -webkit-user-select: text; }
+          .mm-popup * { user-select: text; -webkit-user-select: text; }
           .mm-popup.markdown-rendered { line-height: 1.4; }
           .mm-popup.markdown-rendered p,
           .mm-popup.markdown-rendered ul,
@@ -1489,6 +1490,17 @@ class MindmapView extends ItemView {
         el.style.whiteSpace = 'pre-wrap';
         // Enable interactions so users can hover/scroll inside popup
         el.style.pointerEvents = 'auto';
+        // Allow text selection even if parent has user-select: none
+        ;(el.style as any).userSelect = 'text';
+        ;(el.style as any).webkitUserSelect = 'text';
+        try {
+          // Prevent jsMind from hijacking mouse events while still allowing selection
+          const stop = (ev: Event) => ev.stopPropagation();
+          el.addEventListener('mousedown', stop);
+          el.addEventListener('mouseup', stop);
+          el.addEventListener('click', stop);
+          el.addEventListener('dblclick', stop);
+        } catch {}
         this.containerElDiv.appendChild(el);
         this.hoverPopupEl = el;
       }
