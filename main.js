@@ -24,6 +24,110 @@ __export(main_exports, {
 });
 module.exports = __toCommonJS(main_exports);
 var import_obsidian = require("obsidian");
+
+// themes.ts
+var THEME_OPTIONS = [
+  { key: "default", label: "\u9ED8\u8BA4" },
+  { key: "fresh", label: "\u6E05\u65B0" },
+  { key: "business", label: "\u5546\u52A1" },
+  { key: "nature", label: "\u81EA\u7136" },
+  { key: "elegant", label: "\u4F18\u96C5" },
+  { key: "fashion", label: "\u65F6\u5C1A" },
+  { key: "minimal", label: "\u6781\u7B80" }
+];
+function getJsMindThemeNameFromSetting(theme) {
+  if (theme === "default") return "obsidian";
+  return theme;
+}
+function ensureThemeCssInjected(doc) {
+  const id = "obsidian-jsmind-themes";
+  const existing = doc.getElementById(id);
+  if (existing) {
+    existing.textContent = buildThemesCss();
+    try {
+      existing.parentElement?.removeChild(existing);
+    } catch {
+    }
+    doc.head.appendChild(existing);
+    return;
+  }
+  const st = doc.createElement("style");
+  st.id = id;
+  st.textContent = buildThemesCss();
+  doc.head.appendChild(st);
+}
+function buildThemesCss() {
+  const css = [];
+  const push = (s) => css.push(s);
+  push(`
+    body:not(.theme-dark) jmnodes.theme-obsidian jmnode { background: rgb(225, 235, 255) !important; background-color: rgb(225, 235, 255) !important; background-image: none !important; }
+    body.theme-dark jmnodes.theme-obsidian jmnode { background: rgb(50, 70, 120) !important; background-color: rgb(50, 70, 120) !important; background-image: none !important; }
+    body jmnodes.theme-obsidian jmnode.root { background: var(--interactive-accent) !important; background-color: var(--interactive-accent) !important; background-image: none !important; }
+    body jmnodes.theme-obsidian jmnode.selected { background: var(--interactive-accent) !important; background-color: var(--interactive-accent) !important; background-image: none !important; }
+  `);
+  push(`
+    body:not(.theme-dark) jmnodes.theme-fresh jmnode { background: rgb(210, 246, 235) !important; background-color: rgb(210, 246, 235) !important; background-image: none !important; }
+    body.theme-dark jmnodes.theme-fresh jmnode { background: rgb(30, 90, 75) !important; background-color: rgb(30, 90, 75) !important; background-image: none !important; }
+    body jmnodes.theme-fresh jmnode.root { background: rgb(56, 217, 169) !important; background-color: rgb(56, 217, 169) !important; background-image: none !important; }
+    body jmnodes.theme-fresh jmnode.selected { background: rgb(56, 217, 169) !important; background-color: rgb(56, 217, 169) !important; background-image: none !important; }
+  `);
+  push(`
+    body:not(.theme-dark) jmnodes.theme-business jmnode { background: rgb(226, 235, 255) !important; background-color: rgb(226, 235, 255) !important; background-image: none !important; }
+    body.theme-dark jmnodes.theme-business jmnode { background: rgb(35, 55, 100) !important; background-color: rgb(35, 55, 100) !important; background-image: none !important; }
+    body jmnodes.theme-business jmnode.root { background: rgb(33, 99, 255) !important; background-color: rgb(33, 99, 255) !important; background-image: none !important; }
+    body jmnodes.theme-business jmnode.selected { background: rgb(33, 99, 255) !important; background-color: rgb(33, 99, 255) !important; background-image: none !important; }
+  `);
+  push(`
+    body:not(.theme-dark) jmnodes.theme-nature jmnode { background: rgb(226, 239, 223) !important; background-color: rgb(226, 239, 223) !important; background-image: none !important; }
+    body.theme-dark jmnodes.theme-nature jmnode { background: rgb(40, 70, 40) !important; background-color: rgb(40, 70, 40) !important; background-image: none !important; }
+    body jmnodes.theme-nature jmnode.root { background: rgb(97, 165, 90) !important; background-color: rgb(97, 165, 90) !important; background-image: none !important; }
+    body jmnodes.theme-nature jmnode.selected { background: rgb(97, 165, 90) !important; background-color: rgb(97, 165, 90) !important; background-image: none !important; }
+  `);
+  push(`
+    body:not(.theme-dark) jmnodes.theme-elegant jmnode { background: rgb(236, 226, 250) !important; background-color: rgb(236, 226, 250) !important; background-image: none !important; }
+    body.theme-dark jmnodes.theme-elegant jmnode { background: rgb(60, 45, 85) !important; background-color: rgb(60, 45, 85) !important; background-image: none !important; }
+    body jmnodes.theme-elegant jmnode.root { background: rgb(142, 84, 233) !important; background-color: rgb(142, 84, 233) !important; background-image: none !important; }
+    body jmnodes.theme-elegant jmnode.selected { background: rgb(142, 84, 233) !important; background-color: rgb(142, 84, 233) !important; background-image: none !important; }
+  `);
+  push(`
+    body:not(.theme-dark) jmnodes.theme-fashion jmnode { background: rgb(255, 230, 238) !important; background-color: rgb(255, 230, 238) !important; background-image: none !important; }
+    body.theme-dark jmnodes.theme-fashion jmnode { background: rgb(90, 35, 50) !important; background-color: rgb(90, 35, 50) !important; background-image: none !important; }
+    body jmnodes.theme-fashion jmnode.root { background: rgb(255, 99, 132) !important; background-color: rgb(255, 99, 132) !important; background-image: none !important; }
+    body jmnodes.theme-fashion jmnode.selected { background: rgb(255, 99, 132) !important; background-color: rgb(255, 99, 132) !important; background-image: none !important; }
+  `);
+  push(`
+    body:not(.theme-dark) jmnodes.theme-minimal jmnode { background: rgb(238, 238, 238) !important; background-color: rgb(238, 238, 238) !important; background-image: none !important; }
+    body.theme-dark jmnodes.theme-minimal jmnode { background: rgb(48, 48, 48) !important; background-color: rgb(48, 48, 48) !important; background-image: none !important; }
+    body jmnodes.theme-minimal jmnode.root { background: var(--interactive-accent) !important; background-color: var(--interactive-accent) !important; background-image: none !important; }
+    body jmnodes.theme-minimal jmnode.selected { background: var(--interactive-accent) !important; background-color: var(--interactive-accent) !important; background-image: none !important; }
+  `);
+  push(`
+    body.theme-dark jmnodes.theme-obsidian jmnode,
+    body.theme-dark jmnodes.theme-obsidian jmnode .topic,
+    body.theme-dark jmnodes.theme-obsidian jmnode .topicbody,
+    body.theme-dark jmnodes.theme-fresh jmnode,
+    body.theme-dark jmnodes.theme-fresh jmnode .topic,
+    body.theme-dark jmnodes.theme-fresh jmnode .topicbody,
+    body.theme-dark jmnodes.theme-business jmnode,
+    body.theme-dark jmnodes.theme-business jmnode .topic,
+    body.theme-dark jmnodes.theme-business jmnode .topicbody,
+    body.theme-dark jmnodes.theme-nature jmnode,
+    body.theme-dark jmnodes.theme-nature jmnode .topic,
+    body.theme-dark jmnodes.theme-nature jmnode .topicbody,
+    body.theme-dark jmnodes.theme-elegant jmnode,
+    body.theme-dark jmnodes.theme-elegant jmnode .topic,
+    body.theme-dark jmnodes.theme-elegant jmnode .topicbody,
+    body.theme-dark jmnodes.theme-fashion jmnode,
+    body.theme-dark jmnodes.theme-fashion jmnode .topic,
+    body.theme-dark jmnodes.theme-fashion jmnode .topicbody,
+    body.theme-dark jmnodes.theme-minimal jmnode,
+    body.theme-dark jmnodes.theme-minimal jmnode .topic,
+    body.theme-dark jmnodes.theme-minimal jmnode .topicbody { color: #ffffff !important; }
+  `);
+  return css.join("\n");
+}
+
+// main.ts
 var VIEW_TYPE_MINDMAP = "obsidian-jsmind-mindmap-view";
 function computeHeadingSections(markdownText) {
   const lines = markdownText.split(/\n/);
@@ -333,6 +437,7 @@ var MindmapView = class extends import_obsidian.ItemView {
         st2.textContent = `
           .mm-popup { padding: 4px 6px; user-select: text; -webkit-user-select: text; }
           .mm-popup * { user-select: text; -webkit-user-select: text; }
+          .mm-popup-title { font-weight: 600; margin: 0 0 0.25em 6px; font-size: 0.95em; }
           .mm-popup.markdown-rendered { line-height: 1.4; }
           .mm-popup.markdown-rendered p,
           .mm-popup.markdown-rendered ul,
@@ -352,6 +457,7 @@ var MindmapView = class extends import_obsidian.ItemView {
         `;
         document.head.appendChild(st2);
       }
+      ensureThemeCssInjected(document);
     } catch {
     }
     const toolbar = this.contentEl.createDiv({ cls: "mm-toolbar" });
@@ -569,11 +675,16 @@ var MindmapView = class extends import_obsidian.ItemView {
     if (!this.containerElDiv || !window.jsMind) return;
     this.containerElDiv.empty();
     this.containerElDiv.id = "jsmind_container";
-    const options = { container: "jsmind_container", theme: "info", editable: true, mode: "side", view: { engine: "svg", expander_style: "number", draggable: false } };
+    const themeKey = this.plugin.settings?.theme || "default";
+    const options = { container: "jsmind_container", theme: getJsMindThemeNameFromSetting(themeKey), editable: true, mode: "side", view: { engine: "svg", expander_style: "number", draggable: false } };
     this.jm = new window.jsMind(options);
     this.wrapCenterRootIfNeeded();
     this.allowCenterRoot = false;
     this.jm.show(mind);
+    try {
+      ensureThemeCssInjected(document);
+    } catch {
+    }
     this.restoreViewport(this.prevViewport);
     if (prevSelectedId) {
       try {
@@ -606,6 +717,10 @@ var MindmapView = class extends import_obsidian.ItemView {
     }
     try {
       this.jm.resize && this.jm.resize();
+    } catch {
+    }
+    try {
+      ensureThemeCssInjected(document);
     } catch {
     }
     try {
@@ -678,6 +793,7 @@ var MindmapView = class extends import_obsidian.ItemView {
             }
           };
           const overHandler = (ev) => {
+            if (!this.plugin.settings?.enablePopup) return;
             const t = ev.target;
             const nodeEl = t && (t.closest ? t.closest("jmnode") : null);
             const nodeId = nodeEl?.getAttribute("nodeid") || "";
@@ -693,6 +809,7 @@ var MindmapView = class extends import_obsidian.ItemView {
             this.showHoverPopup(nodeId);
           };
           const outHandler = (ev) => {
+            if (!this.plugin.settings?.enablePopup) return;
             const t = ev.target;
             const nodeEl = t && (t.closest ? t.closest("jmnode") : null);
             if (!nodeEl) return;
@@ -712,8 +829,10 @@ var MindmapView = class extends import_obsidian.ItemView {
             }, 180);
           };
           nodesContainer.addEventListener("click", handler);
-          nodesContainer.addEventListener("mouseover", overHandler);
-          nodesContainer.addEventListener("mouseout", outHandler);
+          if (this.plugin.settings?.enablePopup) {
+            nodesContainer.addEventListener("mouseover", overHandler);
+            nodesContainer.addEventListener("mouseout", outHandler);
+          }
           const dblHandler = (_ev) => {
             this.lastDblClickAtMs = Date.now();
             if (this.revealTimeoutId != null) {
@@ -723,8 +842,10 @@ var MindmapView = class extends import_obsidian.ItemView {
           };
           nodesContainer.addEventListener("dblclick", dblHandler);
           this.register(() => nodesContainer && nodesContainer.removeEventListener("click", handler));
-          this.register(() => nodesContainer && nodesContainer.removeEventListener("mouseover", overHandler));
-          this.register(() => nodesContainer && nodesContainer.removeEventListener("mouseout", outHandler));
+          if (this.plugin.settings?.enablePopup) {
+            this.register(() => nodesContainer && nodesContainer.removeEventListener("mouseover", overHandler));
+            this.register(() => nodesContainer && nodesContainer.removeEventListener("mouseout", outHandler));
+          }
           this.register(() => nodesContainer && nodesContainer.removeEventListener("dblclick", dblHandler));
         }
       };
@@ -1546,6 +1667,10 @@ var MindmapView = class extends import_obsidian.ItemView {
   }
   showHoverPopup(nodeId) {
     try {
+      if (!this.plugin.settings?.enablePopup) {
+        this.hideHoverPopup();
+        return;
+      }
       if (!this.containerElDiv) return;
       if (this.isMindmapEditingActive()) return;
       const body = this.extractNodeImmediateBody(nodeId);
@@ -1571,8 +1696,8 @@ var MindmapView = class extends import_obsidian.ItemView {
         el.style.boxShadow = "0 8px 24px rgba(0,0,0,0.25)";
         {
           const isDark = document.body.classList.contains("theme-dark");
-          el.style.border = isDark ? "1px solid rgba(255,255,255,0.18)" : "1px solid rgba(0,0,0,0.12)";
-          el.style.background = isDark ? "rgba(30,30,30,0.68)" : "rgba(255,255,255,0.85)";
+          el.style.setProperty("border", isDark ? "1px solid rgba(255,255,255,0.18)" : "1px solid rgba(0,0,0,0.12)", "important");
+          el.style.setProperty("background", isDark ? "rgba(30,30,30,0.68)" : "rgba(255,255,255,0.85)", "important");
         }
         el.style.backdropFilter = "blur(15px)";
         el.style.webkitBackdropFilter = "blur(15px)";
@@ -1597,8 +1722,8 @@ var MindmapView = class extends import_obsidian.ItemView {
       }
       try {
         const isDarkNow = document.body.classList.contains("theme-dark");
-        this.hoverPopupEl.style.border = isDarkNow ? "1px solid rgba(255,255,255,0.18)" : "1px solid rgba(0,0,0,0.12)";
-        this.hoverPopupEl.style.background = isDarkNow ? "rgba(30,30,30,0.68)" : "rgba(255,255,255,0.85)";
+        this.hoverPopupEl.style.setProperty("border", isDarkNow ? "1px solid rgba(255,255,255,0.18)" : "1px solid rgba(0,0,0,0.12)", "important");
+        this.hoverPopupEl.style.setProperty("background", isDarkNow ? "rgba(30,30,30,0.68)" : "rgba(255,255,255,0.85)", "important");
       } catch {
       }
       try {
@@ -1642,9 +1767,22 @@ var MindmapView = class extends import_obsidian.ItemView {
       popup.style.whiteSpace = "normal";
       popup.innerHTML = "";
       try {
+        const fromCache = (this.headingsCache || []).find((h) => h.id === nodeId)?.title;
+        const fromJm = this.jm?.get_node?.(nodeId)?.topic;
+        const titleTextRaw = typeof fromCache === "string" && fromCache.length > 0 ? fromCache : typeof fromJm === "string" ? fromJm : "";
+        const titleText = titleTextRaw && titleTextRaw.trim().length > 0 ? titleTextRaw.trim() : "\u65B0\u6807\u9898";
+        const titleEl = document.createElement("div");
+        titleEl.className = "mm-popup-title";
+        titleEl.textContent = titleText;
+        popup.appendChild(titleEl);
+      } catch {
+      }
+      try {
         import_obsidian.MarkdownRenderer.renderMarkdown(body.trim(), popup, this.file?.path ?? "", this.plugin);
       } catch {
-        popup.textContent = body.trim();
+        const fallback = document.createElement("div");
+        fallback.textContent = body.trim();
+        popup.appendChild(fallback);
       }
       this.updateHoverPopupPosition();
       if (this.hoverPopupRAF == null) {
@@ -1767,7 +1905,7 @@ var MindmapPlugin = class extends import_obsidian.Plugin {
   constructor() {
     super(...arguments);
     this.collapsedByFile = {};
-    this.settings = { autoFollow: true };
+    this.settings = { autoFollow: true, theme: "default", enablePopup: true };
   }
   async onload() {
     try {
@@ -1789,6 +1927,8 @@ var MindmapPlugin = class extends import_obsidian.Plugin {
       const data = await this.loadData();
       if (data && typeof data === "object") {
         if (typeof data.autoFollow === "boolean") this.settings.autoFollow = data.autoFollow;
+        if (data.theme) this.settings.theme = data.theme;
+        if (typeof data.enablePopup === "boolean") this.settings.enablePopup = data.enablePopup;
       }
       if (data && typeof data === "object" && data.collapsedByFile) {
         const raw = data.collapsedByFile;
@@ -1871,7 +2011,38 @@ var MindmapSettingTab = class extends import_obsidian.PluginSettingTab {
     containerEl.createEl("h3", { text: "Mindmap (jsMind) Settings" });
     new import_obsidian.Setting(containerEl).setName("Auto follow editor scroll").setDesc("When scrolling markdown, select the top heading in mindmap").addToggle((t) => t.setValue(this.plugin.settings.autoFollow).onChange(async (v) => {
       this.plugin.settings.autoFollow = v;
-      await this.plugin.saveData({ collapsedByFile: this.plugin.collapsedByFile, autoFollow: this.plugin.settings.autoFollow });
+      await this.plugin.saveData({ collapsedByFile: this.plugin.collapsedByFile, autoFollow: this.plugin.settings.autoFollow, theme: this.plugin.settings.theme, enablePopup: this.plugin.settings.enablePopup });
+    }));
+    new import_obsidian.Setting(containerEl).setName("Theme").setDesc("Choose node background theme (supports light/dark)").addDropdown((dd) => {
+      for (const opt of THEME_OPTIONS) {
+        dd.addOption(opt.key, opt.label);
+      }
+      dd.setValue(this.plugin.settings.theme);
+      dd.onChange(async (val) => {
+        this.plugin.settings.theme = val;
+        await this.plugin.saveData({ collapsedByFile: this.plugin.collapsedByFile, autoFollow: this.plugin.settings.autoFollow, theme: this.plugin.settings.theme, enablePopup: this.plugin.settings.enablePopup });
+        try {
+          const leaves = this.app.workspace.getLeavesOfType("obsidian-jsmind-mindmap-view");
+          for (const leaf of leaves) {
+            const view = leaf.view;
+            await view.refresh?.();
+          }
+        } catch {
+        }
+      });
+    });
+    new import_obsidian.Setting(containerEl).setName("Show hover popup").setDesc("Show a Markdown preview popup when hovering a mindmap node").addToggle((t) => t.setValue(this.plugin.settings.enablePopup).onChange(async (v) => {
+      this.plugin.settings.enablePopup = v;
+      await this.plugin.saveData({ collapsedByFile: this.plugin.collapsedByFile, autoFollow: this.plugin.settings.autoFollow, theme: this.plugin.settings.theme, enablePopup: this.plugin.settings.enablePopup });
+      try {
+        const leaves = this.app.workspace.getLeavesOfType("obsidian-jsmind-mindmap-view");
+        for (const leaf of leaves) {
+          const view = leaf.view;
+          view.hideHoverPopup?.();
+          await view.refresh?.();
+        }
+      } catch {
+      }
     }));
   }
 };

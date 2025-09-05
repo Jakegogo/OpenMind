@@ -1,4 +1,5 @@
 import { App, Editor, ItemView, MarkdownView, Notice, Plugin, PluginSettingTab, Setting, TFile, WorkspaceLeaf, requestUrl, MarkdownRenderer } from 'obsidian';
+import { ensureThemeCssInjected, getJsMindThemeNameFromSetting, THEME_OPTIONS, ThemeName } from './themes';
 
 declare global {
   interface Window {
@@ -307,6 +308,7 @@ class MindmapView extends ItemView {
         st2.textContent = `
           .mm-popup { padding: 4px 6px; user-select: text; -webkit-user-select: text; }
           .mm-popup * { user-select: text; -webkit-user-select: text; }
+          .mm-popup-title { font-weight: 600; margin: 0 0 0.25em 6px; font-size: 0.95em; }
           .mm-popup.markdown-rendered { line-height: 1.4; }
           .mm-popup.markdown-rendered p,
           .mm-popup.markdown-rendered ul,
@@ -326,6 +328,8 @@ class MindmapView extends ItemView {
         `;
         document.head.appendChild(st2);
       }
+      // Inject node themes CSS once
+      ensureThemeCssInjected(document);
     } catch {}
     const toolbar = this.contentEl.createDiv({ cls: 'mm-toolbar' });
     const refreshBtn = toolbar.createEl('button', { text: 'Refresh' });
@@ -560,7 +564,8 @@ class MindmapView extends ItemView {
     if (!this.containerElDiv || !window.jsMind) return;
     this.containerElDiv.empty();
     this.containerElDiv.id = 'jsmind_container';
-    const options = { container: 'jsmind_container', theme: 'info', editable: true, mode: 'side', view: { engine: 'svg' ,expander_style: 'number', draggable: false }};
+    const themeKey: ThemeName = (this.plugin as any).settings?.theme || 'default';
+    const options = { container: 'jsmind_container', theme: getJsMindThemeNameFromSetting(themeKey), editable: true, mode: 'side', view: { engine: 'svg' ,expander_style: 'number', draggable: false }};
 
     this.jm = new window.jsMind(options);
     // Wrap center_root so plugin can decide whether to allow auto-centering root
@@ -568,6 +573,8 @@ class MindmapView extends ItemView {
     // By default,禁止居中根节点（例如首次 show 或 refresh 时）
     this.allowCenterRoot = false;
     this.jm.show(mind);
+    // Re-inject themes CSS after render to ensure it is last in head
+    try { ensureThemeCssInjected(document); } catch {}
     // Restore previous viewport transform and reselect without centering
     this.restoreViewport(this.prevViewport);
     if (prevSelectedId) {
@@ -592,6 +599,7 @@ class MindmapView extends ItemView {
       }
     } catch {}
     try { this.jm.resize && this.jm.resize(); } catch {}
+    try { ensureThemeCssInjected(document); } catch {}
 
     // Sync: click/select a node -> reveal and select heading in markdown editor
     try {
@@ -664,6 +672,7 @@ class MindmapView extends ItemView {
           };
           // Hover popup: show immediate body on jmnode hover
           const overHandler = (ev: MouseEvent) => {
+            if (!(this.plugin as any).settings?.enablePopup) return;
             const t = ev.target as HTMLElement;
             const nodeEl = t && (t.closest ? t.closest('jmnode') : null);
             const nodeId = nodeEl?.getAttribute('nodeid') || '';
@@ -674,6 +683,7 @@ class MindmapView extends ItemView {
             this.showHoverPopup(nodeId);
           };
           const outHandler = (ev: MouseEvent) => {
+            if (!(this.plugin as any).settings?.enablePopup) return;
             const t = ev.target as HTMLElement;
             const nodeEl = t && (t.closest ? t.closest('jmnode') : null);
             if (!nodeEl) return;
@@ -691,8 +701,10 @@ class MindmapView extends ItemView {
             }, 180);
           };
           nodesContainer.addEventListener('click', handler);
-          nodesContainer.addEventListener('mouseover', overHandler as any);
-          nodesContainer.addEventListener('mouseout', outHandler as any);
+          if ((this.plugin as any).settings?.enablePopup) {
+            nodesContainer.addEventListener('mouseover', overHandler as any);
+            nodesContainer.addEventListener('mouseout', outHandler as any);
+          }
           const dblHandler = (_ev: Event) => {
             this.lastDblClickAtMs = Date.now();
             if (this.revealTimeoutId != null) {
@@ -703,8 +715,10 @@ class MindmapView extends ItemView {
           };
           nodesContainer.addEventListener('dblclick', dblHandler);
           this.register(() => nodesContainer && nodesContainer.removeEventListener('click', handler));
-          this.register(() => nodesContainer && nodesContainer.removeEventListener('mouseover', overHandler as any));
-          this.register(() => nodesContainer && nodesContainer.removeEventListener('mouseout', outHandler as any));
+          if ((this.plugin as any).settings?.enablePopup) {
+            this.register(() => nodesContainer && nodesContainer.removeEventListener('mouseover', overHandler as any));
+            this.register(() => nodesContainer && nodesContainer.removeEventListener('mouseout', outHandler as any));
+          }
           this.register(() => nodesContainer && nodesContainer.removeEventListener('dblclick', dblHandler));
         }
       };
@@ -1460,6 +1474,7 @@ class MindmapView extends ItemView {
 
   private showHoverPopup(nodeId: string) {
     try {
+      if (!(this.plugin as any).settings?.enablePopup) { this.hideHoverPopup(); return; }
       if (!this.containerElDiv) return;
       if (this.isMindmapEditingActive()) return;
       const body = this.extractNodeImmediateBody(nodeId);
@@ -1480,8 +1495,8 @@ class MindmapView extends ItemView {
         // Theme-aware frosted glass styles (initial)
         {
           const isDark = document.body.classList.contains('theme-dark');
-          el.style.border = isDark ? '1px solid rgba(255,255,255,0.18)' : '1px solid rgba(0,0,0,0.12)';
-          el.style.background = isDark ? 'rgba(30,30,30,0.68)' : 'rgba(255,255,255,0.85)';
+          el.style.setProperty('border', isDark ? '1px solid rgba(255,255,255,0.18)' : '1px solid rgba(0,0,0,0.12)', 'important');
+          el.style.setProperty('background', isDark ? 'rgba(30,30,30,0.68)' : 'rgba(255,255,255,0.85)', 'important');
         }
         (el.style as any).backdropFilter = 'blur(15px)';
         (el.style as any).webkitBackdropFilter = 'blur(15px)';
@@ -1507,8 +1522,8 @@ class MindmapView extends ItemView {
       // Re-apply theme-aware background/border each time we show (handles theme switch)
       try {
         const isDarkNow = document.body.classList.contains('theme-dark');
-        this.hoverPopupEl!.style.border = isDarkNow ? '1px solid rgba(255,255,255,0.18)' : '1px solid rgba(0,0,0,0.12)';
-        this.hoverPopupEl!.style.background = isDarkNow ? 'rgba(30,30,30,0.68)' : 'rgba(255,255,255,0.85)';
+        this.hoverPopupEl!.style.setProperty('border', isDarkNow ? '1px solid rgba(255,255,255,0.18)' : '1px solid rgba(0,0,0,0.12)', 'important');
+        this.hoverPopupEl!.style.setProperty('background', isDarkNow ? 'rgba(30,30,30,0.68)' : 'rgba(255,255,255,0.85)', 'important');
       } catch {}
       // Keep popup visible when mouse enters the popup area; hide on leave only if not entering a node
       try {
@@ -1540,12 +1555,25 @@ class MindmapView extends ItemView {
       try { popup.classList.add('markdown-rendered'); } catch {}
       popup.style.whiteSpace = 'normal';
       popup.innerHTML = '';
+      // Add title line for the current node
+      try {
+        const fromCache = (this.headingsCache || []).find(h => h.id === nodeId)?.title;
+        const fromJm = this.jm?.get_node?.(nodeId)?.topic;
+        const titleTextRaw = (typeof fromCache === 'string' && fromCache.length > 0) ? fromCache : (typeof fromJm === 'string' ? fromJm : '');
+        const titleText = (titleTextRaw && titleTextRaw.trim().length > 0) ? titleTextRaw.trim() : '新标题';
+        const titleEl = document.createElement('div');
+        titleEl.className = 'mm-popup-title';
+        titleEl.textContent = titleText;
+        popup.appendChild(titleEl);
+      } catch {}
       try {
         // Use Obsidian's renderer to get theme-consistent preview
         MarkdownRenderer.renderMarkdown(body.trim(), popup, this.file?.path ?? '', this.plugin);
       } catch {
         // Fallback to plain text if rendering fails
-        popup.textContent = body.trim();
+        const fallback = document.createElement('div');
+        fallback.textContent = body.trim();
+        popup.appendChild(fallback);
       }
       this.updateHoverPopupPosition();
       // Follow transforms while visible
@@ -1661,7 +1689,7 @@ class MindmapView extends ItemView {
 
 export default class MindmapPlugin extends Plugin {
   private collapsedByFile: Record<string, string[]> = {};
-  public settings: { autoFollow: boolean } = { autoFollow: true };
+  public settings: { autoFollow: boolean; theme: ThemeName; enablePopup: boolean } = { autoFollow: true, theme: 'default', enablePopup: true };
 
   async onload() {
     // Minimal logic change (Option B): sanitize class tokens with whitespace
@@ -1688,6 +1716,8 @@ export default class MindmapPlugin extends Plugin {
       const data = (await this.loadData()) as any;
       if (data && typeof data === 'object') {
         if (typeof data.autoFollow === 'boolean') this.settings.autoFollow = data.autoFollow;
+        if (data.theme) (this.settings as any).theme = data.theme as ThemeName;
+        if (typeof data.enablePopup === 'boolean') (this.settings as any).enablePopup = data.enablePopup;
       }
       if (data && typeof data === 'object' && data.collapsedByFile) {
         const raw = data.collapsedByFile as Record<string, string[]>;
@@ -1786,7 +1816,50 @@ class MindmapSettingTab extends PluginSettingTab {
         .setValue(this.plugin.settings.autoFollow)
         .onChange(async (v) => {
           this.plugin.settings.autoFollow = v;
-          await this.plugin.saveData({ collapsedByFile: this.plugin.collapsedByFile, autoFollow: this.plugin.settings.autoFollow });
+          await this.plugin.saveData({ collapsedByFile: this.plugin.collapsedByFile, autoFollow: this.plugin.settings.autoFollow, theme: this.plugin.settings.theme, enablePopup: this.plugin.settings.enablePopup });
+        }));
+
+    // Theme selector
+    new Setting(containerEl)
+      .setName('Theme')
+      .setDesc('Choose node background theme (supports light/dark)')
+      .addDropdown((dd) => {
+        for (const opt of THEME_OPTIONS) {
+          dd.addOption(opt.key, opt.label);
+        }
+        dd.setValue(this.plugin.settings.theme);
+        dd.onChange(async (val) => {
+          this.plugin.settings.theme = (val as any);
+          await this.plugin.saveData({ collapsedByFile: this.plugin.collapsedByFile, autoFollow: this.plugin.settings.autoFollow, theme: this.plugin.settings.theme, enablePopup: this.plugin.settings.enablePopup });
+          try {
+            // Refresh all open mindmap views to apply theme immediately
+            const leaves = this.app.workspace.getLeavesOfType('obsidian-jsmind-mindmap-view');
+            for (const leaf of leaves) {
+              const view = leaf.view as any;
+              await view.refresh?.();
+            }
+          } catch {}
+        });
+      });
+
+    // Hover popup toggle
+    new Setting(containerEl)
+      .setName('Show hover popup')
+      .setDesc('Show a Markdown preview popup when hovering a mindmap node')
+      .addToggle(t => t
+        .setValue(this.plugin.settings.enablePopup)
+        .onChange(async (v) => {
+          this.plugin.settings.enablePopup = v;
+          await this.plugin.saveData({ collapsedByFile: this.plugin.collapsedByFile, autoFollow: this.plugin.settings.autoFollow, theme: this.plugin.settings.theme, enablePopup: this.plugin.settings.enablePopup });
+          try {
+            // Hide popup immediately if turned off and rebind listeners via refresh
+            const leaves = this.app.workspace.getLeavesOfType('obsidian-jsmind-mindmap-view');
+            for (const leaf of leaves) {
+              const view = leaf.view as any;
+              view.hideHoverPopup?.();
+              await view.refresh?.();
+            }
+          } catch {}
         }));
   }
 }
