@@ -262,8 +262,6 @@ var MindmapView = class extends import_obsidian.ItemView {
     // last node id driven into selection to dedupe work
     this.editorSyncIntervalId = null;
     // polling timer id for cursor-only movements
-    this.suppressEditorSyncUntil = 0;
-    // timestamp to pause editor-driven sync briefly
     // Viewport/centering management
     this.prevViewport = null;
     // saved transforms across re-render
@@ -306,17 +304,8 @@ var MindmapView = class extends import_obsidian.ItemView {
     // runtime id -> stable key
     this.stableKeyToId = /* @__PURE__ */ new Map();
     // stable key -> runtime id
-    // Arbitration windows between drivers (cursor vs scroll vs click)
-    this.suppressRevealUntilMs = 0;
-    // after jm-driven selection, suppress reveal back to editor
-    this.suppressCursorSyncUntilMs2 = 0;
-    // suppress cursor-driven sync after scroll-driven
-    this.suppressScrollSyncUntilMs = 0;
-    // suppress scroll-driven sync after cursor-driven
-    this.currentSelectionDriver = null;
-    // last active driver
-    this.driverHoldUntilMs = 0;
-    // hold time to keep current driver in control
+    // FSM for sync control
+    this.syncState = "scroll";
     // Scroll sync (follow markdown scrolling)
     this.scrollSyncEl = null;
     // current scroller we listen to
@@ -329,6 +318,33 @@ var MindmapView = class extends import_obsidian.ItemView {
     // Cached raw file text (for popup extraction and incremental diffs)
     this.lastFileContent = "";
     this.plugin = plugin;
+  }
+  enterScroll() {
+    if (this.syncState === "preview") return;
+    if (this.syncState === "edit") return;
+    if (this.syncState === "scroll") return;
+    this.syncState = "scroll";
+    this.hideAddButton();
+  }
+  forceEnterScroll() {
+    this.syncState = "scroll";
+    this.hideAddButton();
+  }
+  enterEdit() {
+    this.syncState = "edit";
+    this.hideAddButton();
+  }
+  enterPreview() {
+    this.syncState = "preview";
+  }
+  shouldFollowScroll() {
+    return this.syncState === "scroll";
+  }
+  shouldMindmapDriveMarkdown() {
+    return this.syncState === "preview";
+  }
+  shouldCenterOnMarkdownSelection() {
+    return this.syncState === "edit";
   }
   getJsMindEventName(type, data) {
     try {
@@ -473,10 +489,7 @@ var MindmapView = class extends import_obsidian.ItemView {
     this.containerElDiv = container;
     refreshBtn.addEventListener("click", () => this.refresh());
     followBtn.addEventListener("click", () => {
-      this.currentSelectionDriver = "scroll";
-      this.driverHoldUntilMs = Date.now() + 800;
-      this.suppressCursorSyncUntilMs2 = 0;
-      this.suppressScrollSyncUntilMs = 0;
+      this.forceEnterScroll();
     });
     try {
       await this.ensureJsMindLoaded();
@@ -489,10 +502,6 @@ var MindmapView = class extends import_obsidian.ItemView {
         return;
       }
     }
-    this.currentSelectionDriver = "scroll";
-    this.driverHoldUntilMs = Date.now() + 800;
-    this.suppressCursorSyncUntilMs2 = 0;
-    this.suppressScrollSyncUntilMs = 0;
     await this.refresh();
     try {
       const ro = new ResizeObserver(() => {
@@ -569,10 +578,7 @@ var MindmapView = class extends import_obsidian.ItemView {
   async setFile(file) {
     this.file = file;
     this.lastSyncedNodeId = null;
-    this.currentSelectionDriver = "scroll";
-    this.driverHoldUntilMs = Date.now() + 800;
-    this.suppressCursorSyncUntilMs2 = 0;
-    this.suppressScrollSyncUntilMs = 0;
+    this.forceEnterScroll();
     if (this.containerElDiv) await this.refresh();
   }
   async onClose() {
@@ -730,21 +736,10 @@ var MindmapView = class extends import_obsidian.ItemView {
             const evt = this.getJsMindEventName(type, data);
             const nodeIdFromEvent = this.getEventNodeId(data);
             if (evt === "select_node" && nodeIdFromEvent) {
-              if (Date.now() < this.suppressRevealUntilMs) return;
-              if (this.isMindmapEditingActive()) return;
-              if (this.suppressSync) return;
-              if (Date.now() - this.lastDblClickAtMs < 350) return;
-              if (this.revealTimeoutId != null) window.clearTimeout(this.revealTimeoutId);
-              const nodeId = nodeIdFromEvent;
-              this.revealTimeoutId = window.setTimeout(() => {
-                this.lastSyncedNodeId = nodeId;
-                this.suppressEditorSyncUntil = Date.now() + 600;
-                this.revealHeadingById(nodeId);
-                this.showAddButton(nodeId);
-                this.revealTimeoutId = null;
-              }, 200);
+              return;
             }
             if ((evt === "edit" || evt === "update_node" || evt === "nodechanged" || evt === "topic_change" || evt === "textedit") && nodeIdFromEvent) {
+              if (!this.isActiveLeafMindmapView()) return;
               if (!this.isMindmapEditingActive()) return;
               const nodeId = nodeIdFromEvent;
               const newTitle = this.getEventNodeTopic(data).toString();
@@ -752,6 +747,7 @@ var MindmapView = class extends import_obsidian.ItemView {
               });
             }
             if (evt === "select_clear") {
+              this.enterScroll();
               this.hideAddButton();
             }
             if (nodeIdFromEvent) {
@@ -776,17 +772,18 @@ var MindmapView = class extends import_obsidian.ItemView {
         if (this.containerElDiv) {
           const nodesContainer = this.containerElDiv.querySelector("jmnodes") || this.containerElDiv;
           const handler = (ev) => {
+            if (!this.isActiveLeafMindmapView()) return;
             const t = ev.target;
             const nodeEl = t && (t.closest ? t.closest("jmnode") : null);
             const nodeId = nodeEl?.getAttribute("nodeid") || "";
             if (nodeId) {
               if (this.isMindmapEditingActive()) return;
+              this.enterPreview();
               if (this.revealTimeoutId != null) window.clearTimeout(this.revealTimeoutId);
               this.revealTimeoutId = window.setTimeout(() => {
                 if (Date.now() - this.lastDblClickAtMs < 350) return;
                 this.lastSyncedNodeId = nodeId;
-                this.suppressEditorSyncUntil = Date.now() + 600;
-                this.revealHeadingById(nodeId);
+                this.revealHeadingById(nodeId, { focusEditor: true, activateLeaf: true });
                 this.showAddButton(nodeId);
                 this.revealTimeoutId = null;
               }, 200);
@@ -829,6 +826,12 @@ var MindmapView = class extends import_obsidian.ItemView {
             }, 180);
           };
           nodesContainer.addEventListener("click", handler);
+          const blankHandler = (ev) => {
+            const t = ev.target;
+            const isNode = !!(t && (t.closest ? t.closest("jmnode") : null));
+            if (!isNode) this.forceEnterScroll();
+          };
+          nodesContainer.addEventListener("mousedown", blankHandler, true);
           if (this.plugin.settings?.enablePopup) {
             nodesContainer.addEventListener("mouseover", overHandler);
             nodesContainer.addEventListener("mouseout", outHandler);
@@ -1068,9 +1071,11 @@ var MindmapView = class extends import_obsidian.ItemView {
     } catch {
     }
   }
-  async revealHeadingById(nodeId) {
+  async revealHeadingById(nodeId, opts) {
     if (!this.file) return;
     try {
+      const focusEditor = opts?.focusEditor !== false;
+      const activateLeaf = opts?.activateLeaf !== false;
       const content = await this.app.vault.read(this.file);
       const headings = computeHeadingSections(content);
       const target = headings.find((h) => h.id === nodeId);
@@ -1091,11 +1096,11 @@ var MindmapView = class extends import_obsidian.ItemView {
       if (activeMd?.file?.path === this.file.path) {
         const editor = activeMd.editor;
         try {
-          this.app.workspace.revealLeaf(activeMd.leaf);
+          if (activateLeaf) this.app.workspace.revealLeaf(activeMd.leaf);
         } catch {
         }
         try {
-          editor.focus?.();
+          if (focusEditor) editor.focus?.();
         } catch {
         }
         try {
@@ -1115,15 +1120,15 @@ var MindmapView = class extends import_obsidian.ItemView {
           const mdView = v;
           const editor = mdView.editor;
           try {
-            this.app.workspace.setActiveLeaf(leaf, { focus: true });
+            if (activateLeaf) this.app.workspace.setActiveLeaf(leaf, { focus: !!focusEditor });
           } catch {
           }
           try {
-            this.app.workspace.revealLeaf(leaf);
+            if (activateLeaf) this.app.workspace.revealLeaf(leaf);
           } catch {
           }
           try {
-            editor.focus?.();
+            if (focusEditor) editor.focus?.();
           } catch {
           }
           try {
@@ -1147,7 +1152,8 @@ var MindmapView = class extends import_obsidian.ItemView {
       this.suppressSync = true;
       try {
         if (this.jm.select_node) this.jm.select_node(nodeId);
-        if (center && node) {
+        const allowCenter = !!(center && node && this.shouldCenterOnMarkdownSelection());
+        if (allowCenter) {
           this.allowCenterRoot = true;
           window.setTimeout(() => {
             try {
@@ -1229,11 +1235,8 @@ var MindmapView = class extends import_obsidian.ItemView {
   attachEditorSync() {
     const trySync = async () => {
       if (!this.file) return;
-      if (Date.now() < this.suppressCursorSyncUntilMs2) return;
-      if (Date.now() < this.suppressEditorSyncUntil) return;
+      if (!this.isActiveMarkdownForThisFile()) return;
       const activeMd = this.app.workspace.getActiveViewOfType(import_obsidian.MarkdownView);
-      const editorFocused = !!(activeMd && this.isMarkdownEditorFocused(activeMd));
-      if (this.currentSelectionDriver === "scroll" && Date.now() < this.driverHoldUntilMs && !editorFocused) return;
       if (!activeMd || activeMd.file?.path !== this.file.path) return;
       const editor = activeMd.editor;
       const cursor = editor.getCursor();
@@ -1252,17 +1255,18 @@ var MindmapView = class extends import_obsidian.ItemView {
       }
       if (current && current.id !== this.lastSyncedNodeId) {
         this.lastSyncedNodeId = current.id;
-        const center = this.isMarkdownEditorFocused(activeMd);
-        this.suppressRevealUntilMs = Date.now() + 600;
-        this.suppressScrollSyncUntilMs = Date.now() + 400;
-        this.selectMindmapNodeById(current.id, center);
+        const center = this.shouldCenterOnMarkdownSelection();
+        const shouldSelectMindmap = this.shouldFollowScroll() || this.shouldCenterOnMarkdownSelection();
+        if (shouldSelectMindmap) {
+          this.selectMindmapNodeById(current.id, center);
+        }
+        if (this.shouldFollowScroll()) this.ensureMindmapNodeVisible(current.id);
         this.hideAddButton();
-        this.currentSelectionDriver = "cursor";
-        this.driverHoldUntilMs = Date.now() + 500;
       }
     };
     this.registerEvent(this.app.workspace.on("editor-change", (editor, mdView) => {
       if (!this.file) return;
+      if (!this.isActiveMarkdownForThisFile()) return;
       if (mdView?.file?.path === this.file.path) {
         trySync();
       }
@@ -1285,15 +1289,26 @@ var MindmapView = class extends import_obsidian.ItemView {
       } catch {
       }
       const activeMd = this.app.workspace.getActiveViewOfType(import_obsidian.MarkdownView);
+      if (!this.isActiveMarkdownForThisFile()) return;
       if (!activeMd) return;
       const scroller = activeMd.contentEl?.querySelector?.(".cm-scroller");
       if (!scroller) return;
+      try {
+        const cmRoot = activeMd.contentEl?.querySelector?.(".cm-editor");
+        if (cmRoot) {
+          const onEditMouseDown = () => {
+            this.enterEdit();
+          };
+          cmRoot.addEventListener("mousedown", onEditMouseDown, true);
+          this.register(() => cmRoot && cmRoot.removeEventListener("mousedown", onEditMouseDown, true));
+        }
+      } catch {
+      }
       const scheduleRun = () => {
         const run = () => {
           try {
             if (!this.isAutoFollowEnabled()) return;
             if (!this.file || activeMd.file?.path !== this.file.path) return;
-            if (this.currentSelectionDriver === "cursor") return;
             const editor = activeMd.editor;
             const content = editor.getValue();
             const headings = computeHeadingSections(content);
@@ -1339,13 +1354,11 @@ var MindmapView = class extends import_obsidian.ItemView {
             }
             if (best && best.id !== this.lastSyncedNodeId) {
               this.lastSyncedNodeId = best.id;
-              this.hideAddButton();
               const center = false;
-              this.suppressRevealUntilMs = Date.now() + 600;
-              this.selectMindmapNodeById(best.id, center);
-              this.ensureMindmapNodeVisible(best.id);
-              this.currentSelectionDriver = "scroll";
-              this.driverHoldUntilMs = Date.now() + 700;
+              if (this.shouldFollowScroll()) {
+                this.selectMindmapNodeById(best.id, center);
+                this.ensureMindmapNodeVisible(best.id);
+              }
             }
           } catch {
           }
@@ -1353,13 +1366,13 @@ var MindmapView = class extends import_obsidian.ItemView {
         if (typeof window.requestAnimationFrame === "function") {
           window.requestAnimationFrame(run);
         } else {
-          setTimeout(run, 16);
+          setTimeout(run, 50);
         }
       };
       const onScroll = () => {
         if (!this.isAutoFollowEnabled()) return;
         if (!this.file || activeMd.file?.path !== this.file.path) return;
-        if (this.currentSelectionDriver === "cursor") return;
+        this.enterScroll();
         const now = Date.now();
         const elapsed = now - this.scrollSyncLastRunMs;
         const threshold = 200;
@@ -1396,6 +1409,7 @@ var MindmapView = class extends import_obsidian.ItemView {
   showAddButton(nodeId) {
     try {
       if (!this.jm || !this.containerElDiv) return;
+      if (!this.shouldMindmapDriveMarkdown()) return;
       if (this.isMindmapEditingActive()) return;
       const node = this.jm.get_node?.(nodeId);
       if (!node) {
@@ -1889,6 +1903,23 @@ var MindmapView = class extends import_obsidian.ItemView {
       const cmEl = mdView.contentEl?.querySelector?.(".cm-editor");
       if (!cmEl) return false;
       return !!(active === cmEl || active.closest?.(".cm-editor") === cmEl);
+    } catch {
+    }
+    return false;
+  }
+  isActiveLeafMindmapView() {
+    try {
+      const activeLeaf = this.app.workspace.activeLeaf;
+      return !!(activeLeaf && activeLeaf.view === this);
+    } catch {
+    }
+    return false;
+  }
+  isActiveMarkdownForThisFile() {
+    try {
+      const mv = this.app.workspace.getActiveViewOfType(import_obsidian.MarkdownView);
+      if (!mv) return false;
+      return !!(mv.file && this.file && mv.file.path === this.file.path);
     } catch {
     }
     return false;

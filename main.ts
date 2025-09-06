@@ -22,6 +22,7 @@ type HeadingNode = {
   style: 'atx' | 'setext';
 };
 
+// TODO 添加缓存
 function computeHeadingSections(markdownText: string): HeadingNode[] {
   const lines = markdownText.split(/\n/);
   const headingRegex = /^(#{1,6})\s+(.*)$/;
@@ -152,7 +153,6 @@ class MindmapView extends ItemView {
   private suppressSync: boolean = false;              // guard to avoid feedback loops while selecting in jm
   private lastSyncedNodeId: string | null = null;     // last node id driven into selection to dedupe work
   private editorSyncIntervalId: number | null = null; // polling timer id for cursor-only movements
-  private suppressEditorSyncUntil: number = 0;        // timestamp to pause editor-driven sync briefly
 
   // Viewport/centering management
   private prevViewport: { nodesTransform: string | null; canvasTransform: string | null } | null = null; // saved transforms across re-render
@@ -185,12 +185,21 @@ class MindmapView extends ItemView {
   private idToStableKey: Map<string, string> = new Map(); // runtime id -> stable key
   private stableKeyToId: Map<string, string> = new Map(); // stable key -> runtime id
 
-  // Arbitration windows between drivers (cursor vs scroll vs click)
-  private suppressRevealUntilMs: number = 0;          // after jm-driven selection, suppress reveal back to editor
-  private suppressCursorSyncUntilMs2: number = 0;     // suppress cursor-driven sync after scroll-driven
-  private suppressScrollSyncUntilMs: number = 0;      // suppress scroll-driven sync after cursor-driven
-  private currentSelectionDriver: 'scroll' | 'cursor' | null = null; // last active driver
-  private driverHoldUntilMs: number = 0;              // hold time to keep current driver in control
+  // FSM for sync control
+  private syncState: 'scroll' | 'edit' | 'preview' = 'scroll';
+  private enterScroll() { 
+    if (this.syncState === 'preview') return;
+    if (this.syncState === 'edit') return;
+    if (this.syncState === 'scroll') return;
+    this.syncState = 'scroll';
+    this.hideAddButton();
+  }
+  private forceEnterScroll() { this.syncState = 'scroll'; this.hideAddButton(); }
+  private enterEdit() { this.syncState = 'edit'; this.hideAddButton(); }
+  private enterPreview() { this.syncState = 'preview'; }
+  private shouldFollowScroll(): boolean { return this.syncState === 'scroll'; }
+  private shouldMindmapDriveMarkdown(): boolean { return this.syncState === 'preview'; }
+  private shouldCenterOnMarkdownSelection(): boolean { return this.syncState === 'edit'; }
 
   // Scroll sync (follow markdown scrolling)
   private scrollSyncEl: HTMLElement | null = null;    // current scroller we listen to
@@ -345,11 +354,8 @@ class MindmapView extends ItemView {
     this.containerElDiv = container;
     refreshBtn.addEventListener('click', () => this.refresh());
     followBtn.addEventListener('click', () => {
-      // Re-enable scroll-driven follow immediately
-      this.currentSelectionDriver = 'scroll';
-      this.driverHoldUntilMs = Date.now() + 800;
-      this.suppressCursorSyncUntilMs2 = 0;
-      this.suppressScrollSyncUntilMs = 0;
+      // Follow is now purely based on active view + setting; nothing to toggle here
+      this.forceEnterScroll();
     });
 
     try {
@@ -364,11 +370,7 @@ class MindmapView extends ItemView {
         return;
       }
     }
-    // Default selection driver to scroll on initial open
-    this.currentSelectionDriver = 'scroll';
-    this.driverHoldUntilMs = Date.now() + 800;
-    this.suppressCursorSyncUntilMs2 = 0;
-    this.suppressScrollSyncUntilMs = 0;
+    // No driver arbitration: single-direction via active view only
     await this.refresh();
 
     // Observe size changes for reliable canvas resizing
@@ -450,11 +452,8 @@ class MindmapView extends ItemView {
   async setFile(file: TFile) {
     this.file = file;
     this.lastSyncedNodeId = null;
-    // Reset driver to scroll on file switch
-    this.currentSelectionDriver = 'scroll';
-    this.driverHoldUntilMs = Date.now() + 800;
-    this.suppressCursorSyncUntilMs2 = 0;
-    this.suppressScrollSyncUntilMs = 0;
+    this.forceEnterScroll();
+    // No driver reset needed
     if (this.containerElDiv) await this.refresh();
   }
 
@@ -609,23 +608,13 @@ class MindmapView extends ItemView {
             const evt = this.getJsMindEventName(type, data);
             const nodeIdFromEvent = this.getEventNodeId(data);
             if (evt === 'select_node' && nodeIdFromEvent) {
-              if (Date.now() < this.suppressRevealUntilMs) return;
-              if (this.isMindmapEditingActive()) return;
-              if (this.suppressSync) return;
-              // Debounce single-click to not block double-click editing in jsMind
-              if (Date.now() - this.lastDblClickAtMs < 350) return;
-              if (this.revealTimeoutId != null) window.clearTimeout(this.revealTimeoutId);
-              const nodeId = nodeIdFromEvent;
-              this.revealTimeoutId = window.setTimeout(() => {
-                this.lastSyncedNodeId = nodeId;
-                this.suppressEditorSyncUntil = Date.now() + 600;
-                this.revealHeadingById(nodeId);
-                this.showAddButton(nodeId);
-                this.revealTimeoutId = null;
-              }, 200);
+              // Ignore programmatic select_node; only explicit mouse clicks (below) enter preview and reveal
+              return;
             }
             // Some builds of jsMind emit 'edit' on inline rename; also try 'update_node' as fallback
             if ((evt === 'edit' || evt === 'update_node' || evt === 'nodechanged' || evt === 'topic_change' || evt === 'textedit') && nodeIdFromEvent) {
+              // Only allow mindmap->markdown rename when mindmap is the active leaf
+              if (!this.isActiveLeafMindmapView()) return;
               // Only treat as a rename when inline editing is active inside jsMind
               if (!this.isMindmapEditingActive()) return;
               const nodeId = nodeIdFromEvent;
@@ -633,6 +622,7 @@ class MindmapView extends ItemView {
               this.renameHeadingInFile(nodeId, newTitle).catch(() => {});
             }
             if (evt === 'select_clear') {
+              this.enterScroll();
               this.hideAddButton();
             }
             // Persist collapse / expand state per file using stable key
@@ -652,19 +642,22 @@ class MindmapView extends ItemView {
         if (this.containerElDiv) {
           const nodesContainer = this.containerElDiv.querySelector('jmnodes') || this.containerElDiv;
           const handler = (ev: Event) => {
+            // Only allow mindmap->markdown click reveal when this view is active
+            if (!this.isActiveLeafMindmapView()) return;
             const t = ev.target as HTMLElement;
             const nodeEl = t && (t.closest ? t.closest('jmnode') : null);
             const nodeId = nodeEl?.getAttribute('nodeid') || '';
             if (nodeId) {
               if (this.isMindmapEditingActive()) return;
+              this.enterPreview();
               // Debounce click similarly to not interfere double-click
               if (this.revealTimeoutId != null) window.clearTimeout(this.revealTimeoutId);
               this.revealTimeoutId = window.setTimeout(() => {
                 // if a dblclick just happened, skip
                 if (Date.now() - this.lastDblClickAtMs < 350) return;
                 this.lastSyncedNodeId = nodeId;
-                this.suppressEditorSyncUntil = Date.now() + 600;
-                this.revealHeadingById(nodeId);
+                // In preview, reveal and focus editor to show selection, but FSM stays in 'preview'
+                this.revealHeadingById(nodeId, { focusEditor: true, activateLeaf: true });
                 this.showAddButton(nodeId);
                 this.revealTimeoutId = null;
               }, 200);
@@ -701,6 +694,13 @@ class MindmapView extends ItemView {
             }, 180);
           };
           nodesContainer.addEventListener('click', handler);
+          // Click on blank area -> scroll state
+          const blankHandler = (ev: MouseEvent) => {
+            const t = ev.target as HTMLElement;
+            const isNode = !!(t && (t.closest ? t.closest('jmnode') : null));
+            if (!isNode) this.forceEnterScroll();
+          };
+          nodesContainer.addEventListener('mousedown', blankHandler, true);
           if ((this.plugin as any).settings?.enablePopup) {
             nodesContainer.addEventListener('mouseover', overHandler as any);
             nodesContainer.addEventListener('mouseout', outHandler as any);
@@ -930,9 +930,11 @@ class MindmapView extends ItemView {
     } catch {}
   }
 
-  private async revealHeadingById(nodeId: string) {
+  private async revealHeadingById(nodeId: string, opts?: { focusEditor?: boolean; activateLeaf?: boolean }) {
     if (!this.file) return;
     try {
+      const focusEditor = opts?.focusEditor !== false;
+      const activateLeaf = opts?.activateLeaf !== false;
       const content = await this.app.vault.read(this.file);
       const headings = computeHeadingSections(content);
       const target = headings.find(h => h.id === nodeId);
@@ -954,8 +956,8 @@ class MindmapView extends ItemView {
       const to = { line: target.lineStart, ch: chEnd } as any;
       if (activeMd?.file?.path === this.file.path) {
         const editor = activeMd.editor;
-        try { this.app.workspace.revealLeaf(activeMd.leaf); } catch {}
-        try { (editor as any).focus?.(); } catch {}
+        try { if (activateLeaf) this.app.workspace.revealLeaf(activeMd.leaf); } catch {}
+        try { if (focusEditor) (editor as any).focus?.(); } catch {}
         try { editor.setSelection(from, to); } catch {}
         try { (editor as any).scrollIntoView({ from, to }, true); } catch {}
         return;
@@ -967,9 +969,9 @@ class MindmapView extends ItemView {
         if (v?.file?.path === this.file.path) {
           const mdView = v as MarkdownView;
           const editor = mdView.editor;
-          try { this.app.workspace.setActiveLeaf(leaf, { focus: true }); } catch {}
-          try { this.app.workspace.revealLeaf(leaf); } catch {}
-          try { (editor as any).focus?.(); } catch {}
+          try { if (activateLeaf) this.app.workspace.setActiveLeaf(leaf, { focus: !!focusEditor }); } catch {}
+          try { if (activateLeaf) this.app.workspace.revealLeaf(leaf); } catch {}
+          try { if (focusEditor) (editor as any).focus?.(); } catch {}
           try { editor.setSelection(from, to); } catch {}
           try { (editor as any).scrollIntoView({ from, to }, true); } catch {}
           return;
@@ -985,7 +987,9 @@ class MindmapView extends ItemView {
       this.suppressSync = true;
       try {
         if (this.jm.select_node) this.jm.select_node(nodeId);
-        if (center && node) {
+        // Only center in edit mode per FSM rule
+        const allowCenter = !!(center && node && this.shouldCenterOnMarkdownSelection());
+        if (allowCenter) {
           // Defer centering until selection/layout settles
           this.allowCenterRoot = true;
           window.setTimeout(() => {
@@ -1035,6 +1039,7 @@ class MindmapView extends ItemView {
         }
       }
 
+      // If fully offscreen, center the node to ensure visibility (original behavior)
       if (!nudged && fullyOffscreen) {
         this.allowCenterRoot = true;
         try { this.jm.center_node && this.jm.center_node(node); } catch {}
@@ -1048,11 +1053,9 @@ class MindmapView extends ItemView {
   private attachEditorSync() {
     const trySync = async () => {
       if (!this.file) return;
-      if (Date.now() < this.suppressCursorSyncUntilMs2) return;
-      if (Date.now() < this.suppressEditorSyncUntil) return;
+      // Only allow markdown->mindmap when active view is this file's markdown
+      if (!this.isActiveMarkdownForThisFile()) return;
       const activeMd = this.app.workspace.getActiveViewOfType(MarkdownView);
-      const editorFocused = !!(activeMd && this.isMarkdownEditorFocused(activeMd));
-      if (this.currentSelectionDriver === 'scroll' && Date.now() < this.driverHoldUntilMs && !editorFocused) return;
       if (!activeMd || activeMd.file?.path !== this.file.path) return;
       const editor = activeMd.editor;
       const cursor = editor.getCursor();
@@ -1070,21 +1073,24 @@ class MindmapView extends ItemView {
         }
       }
       if (current && current.id !== this.lastSyncedNodeId) {
+        // Always record latest id to avoid repeated attempts
         this.lastSyncedNodeId = current.id;
-        const center = this.isMarkdownEditorFocused(activeMd);
-        this.suppressRevealUntilMs = Date.now() + 600;
-        this.suppressScrollSyncUntilMs = Date.now() + 400;
-        this.selectMindmapNodeById(current.id, center);
-        // From markdown-driven selection: hide +/− to avoid accidental ops
+        const center = this.shouldCenterOnMarkdownSelection();
+        const shouldSelectMindmap = this.shouldFollowScroll() || this.shouldCenterOnMarkdownSelection();
+        if (shouldSelectMindmap) {
+          this.selectMindmapNodeById(current.id, center);
+        }
+        if (this.shouldFollowScroll()) this.ensureMindmapNodeVisible(current.id);
+        // Do not show buttons when markdown drives selection
         this.hideAddButton();
-        this.currentSelectionDriver = 'cursor';
-        this.driverHoldUntilMs = Date.now() + 500;
       }
     };
 
     // Editor content change -> sync
     this.registerEvent(this.app.workspace.on('editor-change', (editor: Editor, mdView?: MarkdownView) => {
       if (!this.file) return;
+      // Only run when this file's markdown is the active view
+      if (!this.isActiveMarkdownForThisFile()) return;
       if (mdView?.file?.path === this.file.path) {
         trySync();
       }
@@ -1111,15 +1117,24 @@ class MindmapView extends ItemView {
         }
       } catch {}
       const activeMd = this.app.workspace.getActiveViewOfType(MarkdownView);
+      if (!this.isActiveMarkdownForThisFile()) return;
       if (!activeMd) return;
       const scroller = (activeMd as any).contentEl?.querySelector?.('.cm-scroller');
       if (!scroller) return;
+      // Enter edit when the user clicks inside the editor area
+      try {
+        const cmRoot = (activeMd as any).contentEl?.querySelector?.('.cm-editor');
+        if (cmRoot) {
+          const onEditMouseDown = () => { this.enterEdit(); };
+          cmRoot.addEventListener('mousedown', onEditMouseDown, true);
+          this.register(() => cmRoot && cmRoot.removeEventListener('mousedown', onEditMouseDown, true));
+        }
+      } catch {}
       const scheduleRun = () => {
         const run = () => {
           try {
             if (!this.isAutoFollowEnabled()) return;
             if (!this.file || activeMd.file?.path !== this.file.path) return;
-            if (this.currentSelectionDriver === 'cursor') return;
             const editor = activeMd.editor as any;
             const content = editor.getValue();
             const headings = computeHeadingSections(content);
@@ -1155,26 +1170,26 @@ class MindmapView extends ItemView {
             }
             if (best && best.id !== this.lastSyncedNodeId) {
               this.lastSyncedNodeId = best.id;
-              this.hideAddButton();
               const center = false;
-              this.suppressRevealUntilMs = Date.now() + 600;
-              this.selectMindmapNodeById(best.id, center);
-              this.ensureMindmapNodeVisible(best.id);
-              this.currentSelectionDriver = 'scroll';
-              this.driverHoldUntilMs = Date.now() + 700;
+              if (this.shouldFollowScroll()) {
+                this.selectMindmapNodeById(best.id, center);
+                this.ensureMindmapNodeVisible(best.id);
+              }
             }
           } catch {}
         };
         if (typeof window.requestAnimationFrame === 'function') {
           window.requestAnimationFrame(run);
         } else {
-          setTimeout(run, 16);
+          setTimeout(run, 50);
         }
       };
       const onScroll = () => {
+        // if (!this.isActiveMarkdownForThisFile()) return;
         if (!this.isAutoFollowEnabled()) return;
         if (!this.file || activeMd.file?.path !== this.file.path) return;
-        if (this.currentSelectionDriver === 'cursor') return;
+        // Enter scroll mode on user scroll
+        this.enterScroll();
         const now = Date.now();
         const elapsed = now - this.scrollSyncLastRunMs;
         const threshold = 200;
@@ -1210,6 +1225,8 @@ class MindmapView extends ItemView {
   private showAddButton(nodeId: string) {
     try {
       if (!this.jm || !this.containerElDiv) return;
+      // Only show buttons in preview mode
+      if (!this.shouldMindmapDriveMarkdown()) return;
       if (this.isMindmapEditingActive()) return;
       const node = this.jm.get_node?.(nodeId);
       if (!node) {
@@ -1673,6 +1690,23 @@ class MindmapView extends ItemView {
       const cmEl = (mdView as any).contentEl?.querySelector?.('.cm-editor');
       if (!cmEl) return false;
       return !!(active === cmEl || active.closest?.('.cm-editor') === cmEl);
+    } catch {}
+    return false;
+  }
+
+  private isActiveLeafMindmapView(): boolean {
+    try {
+      const activeLeaf = (this.app.workspace as any).activeLeaf;
+      return !!(activeLeaf && activeLeaf.view === this);
+    } catch {}
+    return false;
+  }
+
+  private isActiveMarkdownForThisFile(): boolean {
+    try {
+      const mv = this.app.workspace.getActiveViewOfType(MarkdownView);
+      if (!mv) return false;
+      return !!(mv.file && this.file && mv.file.path === this.file.path);
     } catch {}
     return false;
   }
