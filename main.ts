@@ -1,4 +1,5 @@
 import { App, Editor, ItemView, MarkdownView, Notice, Plugin, PluginSettingTab, Setting, TFile, WorkspaceLeaf, requestUrl, MarkdownRenderer } from 'obsidian';
+import { toolsShowHoverPopup, toolsHideHoverPopup, toolsShowAddButton, toolsHideAddButton } from './tools';
 import { ensureThemeCssInjected, getJsMindThemeNameFromSetting, THEME_OPTIONS, ThemeName } from './themes';
 
 declare global {
@@ -38,6 +39,16 @@ function computeHeadingSections(markdownText: string): HeadingNode[] {
   } catch {}
   const lines = markdownText.split(/\n/);
   const headingRegex = /^(#{1,6})\s+(.*)$/;
+  const slugify = (s: string) => {
+    try {
+      const base = s.trim().toLowerCase();
+      const collapsed = base.replace(/\s+/g, '-');
+      const cleaned = collapsed.replace(/[^a-z0-9\-\u4e00-\u9fa5]+/gi, '');
+      const trimmed = cleaned.replace(/^-+|-+$/g, '');
+      return trimmed || 'untitled';
+    } catch { return 'untitled'; }
+  };
+  const slugCounts = new Map<string, number>();
   const headingsTemp: Array<Omit<HeadingNode, 'end' | 'headingTextEnd' | 'children' | 'parentId'> & { raw: string; style: 'atx' | 'setext' }> = [];
   let offset = 0;
   for (let i = 0; i < lines.length; i++) {
@@ -48,8 +59,11 @@ function computeHeadingSections(markdownText: string): HeadingNode[] {
       const title = match[2].trim();
       const start = offset;
       const headingTextEnd = start + line.length; // end of heading line
+      const slug = slugify(title);
+      const cnt = (slugCounts.get(slug) || 0) + 1; slugCounts.set(slug, cnt);
+      const hid = cnt === 1 ? `h_${slug}` : `h_${slug}_${cnt}`;
       headingsTemp.push({
-        id: `h_${i}_${start}`,
+        id: hid,
         level: hashes.length,
         title,
         start,
@@ -63,8 +77,11 @@ function computeHeadingSections(markdownText: string): HeadingNode[] {
         const start = offset;
         const title = line.trim();
         const headingTextEnd = start + line.length; // only first line text
+        const slug = slugify(title);
+        const cnt = (slugCounts.get(slug) || 0) + 1; slugCounts.set(slug, cnt);
+        const hid = cnt === 1 ? `h_${slug}` : `h_${slug}_${cnt}`;
         headingsTemp.push({
-          id: `h_${i}_${start}`,
+          id: hid,
           level: 1,
           title,
           start,
@@ -76,8 +93,11 @@ function computeHeadingSections(markdownText: string): HeadingNode[] {
         const start = offset;
         const title = line.trim();
         const headingTextEnd = start + line.length;
+        const slug = slugify(title);
+        const cnt = (slugCounts.get(slug) || 0) + 1; slugCounts.set(slug, cnt);
+        const hid = cnt === 1 ? `h_${slug}` : `h_${slug}_${cnt}`;
         headingsTemp.push({
-          id: `h_${i}_${start}`,
+          id: hid,
           level: 2,
           title,
           start,
@@ -1247,105 +1267,49 @@ class MindmapView extends ItemView {
   }
 
   private showAddButton(nodeId: string) {
-    try {
-      if (!this.jm || !this.containerElDiv) return;
-      // Only show buttons in preview mode
-      if (!this.shouldMindmapDriveMarkdown()) return;
-      if (this.isMindmapEditingActive()) return;
-      const node = this.jm.get_node?.(nodeId);
-      if (!node) {
-        this.hideAddButton();
-        return;
-      }
-      let btn = this.addButtonEl;
-      if (!btn) {
-        btn = document.createElement('button');
-        btn.textContent = '+';
-        btn.title = 'Add child';
-        btn.style.position = 'absolute';
-        btn.style.zIndex = '5';
-        btn.style.width = '22px';
-        btn.style.height = '22px';
-        btn.style.lineHeight = '22px';
-        btn.style.padding = '0';
-        btn.style.textAlign = 'center';
-        btn.style.boxSizing = 'border-box';
-        btn.style.borderRadius = '11px';
-        btn.style.border = '1px solid #90c2ff';
-        btn.style.background = '#e8f2ff';
-        btn.style.color = '#0b3d91';
-        btn.style.cursor = 'pointer';
-        this.containerElDiv.appendChild(btn);
-        this.addButtonEl = btn;
-      }
-      // If element exists but was removed due to refresh, re-append
-      if (this.addButtonEl && this.addButtonEl.parentElement !== this.containerElDiv) {
-        this.containerElDiv.appendChild(this.addButtonEl);
-      }
-      // Always bind to current nodeId (overwrite previous handler)
-      this.addButtonEl!.onclick = (e) => { e.stopPropagation(); this.addChildUnder(nodeId); };
-      // create delete button alongside (hidden for root)
-      if (!this.deleteButtonEl) {
-        const del = document.createElement('button');
-        del.textContent = '−';
-        del.title = 'Delete node';
-        del.style.position = 'absolute';
-        del.style.zIndex = '5';
-        del.style.width = '22px';
-        del.style.height = '22px';
-        del.style.lineHeight = '22px';
-        del.style.padding = '0';
-        del.style.textAlign = 'center';
-        del.style.boxSizing = 'border-box';
-        del.style.borderRadius = '11px';
-        del.style.border = '1px solid #ff9aa2';
-        del.style.background = '#ffecef';
-        del.style.color = '#cc0033';
-        del.style.cursor = 'pointer';
-        this.containerElDiv.appendChild(del);
-        this.deleteButtonEl = del;
-      }
-      if (this.deleteButtonEl && this.deleteButtonEl.parentElement !== this.containerElDiv) {
-        this.containerElDiv.appendChild(this.deleteButtonEl);
-      }
-      // Always bind to current nodeId
-      this.deleteButtonEl!.onclick = (e) => { e.stopPropagation(); this.deleteHeadingById(nodeId); };
-      this.addButtonForNodeId = nodeId;
-      this.updateAddButtonPosition();
-      // start RAF loop to follow transforms while visible
-      if (this.addButtonRAF == null) {
-        const tick = () => {
-          this.updateAddButtonPosition();
-          if (this.addButtonEl && this.addButtonEl.style.display !== 'none') {
-            this.addButtonRAF = window.requestAnimationFrame(tick);
-          } else {
-            if (this.addButtonRAF != null) {
-              window.cancelAnimationFrame(this.addButtonRAF);
-              this.addButtonRAF = null;
-            }
-          }
-        };
-        this.addButtonRAF = window.requestAnimationFrame(tick);
-      }
-      // Root node: show only add, hide delete for safety
-      if (node.isroot && this.deleteButtonEl) {
-        this.deleteButtonEl.style.display = 'none';
-      }
-    } catch {}
+    toolsShowAddButton(nodeId, {
+      containerElDiv: this.containerElDiv,
+      jm: this.jm,
+      app: this.app,
+      plugin: this.plugin,
+      file: this.file,
+      shouldMindmapDriveMarkdown: () => this.shouldMindmapDriveMarkdown(),
+      isMindmapEditingActive: () => this.isMindmapEditingActive(),
+      addButtonEl: this.addButtonEl,
+      deleteButtonEl: this.deleteButtonEl,
+      addButtonForNodeId: this.addButtonForNodeId,
+      setAddButtonEl: (el) => { this.addButtonEl = el; },
+      setDeleteButtonEl: (el) => { this.deleteButtonEl = el; },
+      setAddButtonForNodeId: (id) => { this.addButtonForNodeId = id; },
+      updateAddButtonPosition: () => this.updateAddButtonPosition(),
+      addChildUnder: (id) => this.addChildUnder(id),
+      deleteHeadingById: (id) => this.deleteHeadingById(id),
+      addButtonRAF: this.addButtonRAF,
+      setAddButtonRAF: (id) => { this.addButtonRAF = id; },
+    });
   }
 
   private hideAddButton() {
-    if (this.addButtonEl) {
-      this.addButtonEl.style.display = 'none';
-      this.addButtonForNodeId = null;
-      if (this.addButtonRAF != null) {
-        try { window.cancelAnimationFrame(this.addButtonRAF); } catch {}
-        this.addButtonRAF = null;
-      }
-    }
-    if (this.deleteButtonEl) {
-      this.deleteButtonEl.style.display = 'none';
-    }
+    toolsHideAddButton({
+      containerElDiv: this.containerElDiv,
+      jm: this.jm,
+      app: this.app,
+      plugin: this.plugin,
+      file: this.file,
+      shouldMindmapDriveMarkdown: () => this.shouldMindmapDriveMarkdown(),
+      isMindmapEditingActive: () => this.isMindmapEditingActive(),
+      addButtonEl: this.addButtonEl,
+      deleteButtonEl: this.deleteButtonEl,
+      addButtonForNodeId: this.addButtonForNodeId,
+      setAddButtonEl: (el) => { this.addButtonEl = el; },
+      setDeleteButtonEl: (el) => { this.deleteButtonEl = el; },
+      setAddButtonForNodeId: (id) => { this.addButtonForNodeId = id; },
+      updateAddButtonPosition: () => this.updateAddButtonPosition(),
+      addChildUnder: (id) => this.addChildUnder(id),
+      deleteHeadingById: (id) => this.deleteHeadingById(id),
+      addButtonRAF: this.addButtonRAF,
+      setAddButtonRAF: (id) => { this.addButtonRAF = id; },
+    });
   }
 
   private async addChildUnder(nodeId: string) {
@@ -1514,130 +1478,47 @@ class MindmapView extends ItemView {
   }
 
   private showHoverPopup(nodeId: string) {
-    try {
-      if (!(this.plugin as any).settings?.enablePopup) { this.hideHoverPopup(); return; }
-      if (!this.containerElDiv) return;
-      if (this.isMindmapEditingActive()) return;
-      const body = this.extractNodeImmediateBody(nodeId);
-      if (!body || body.trim().length === 0) { this.hideHoverPopup(); return; }
-      let el = this.hoverPopupEl;
-      if (!el) {
-        el = document.createElement('div');
-        try { el.classList.add('mm-popup'); } catch {}
-        el.style.position = 'absolute';
-        el.style.zIndex = '6';
-        el.style.minWidth = '220px';
-        el.style.maxWidth = '420px';
-        el.style.maxHeight = '240px';
-        el.style.overflow = 'auto';
-        el.style.padding = '4px 6px';
-        el.style.borderRadius = '6px';
-        el.style.boxShadow = '0 8px 24px rgba(0,0,0,0.25)';
-        // Theme-aware frosted glass styles (initial)
-        {
-          const isDark = document.body.classList.contains('theme-dark');
-          el.style.setProperty('border', isDark ? '1px solid rgba(255,255,255,0.18)' : '1px solid rgba(0,0,0,0.12)', 'important');
-          el.style.setProperty('background', isDark ? 'rgba(30,30,30,0.68)' : 'rgba(255,255,255,0.85)', 'important');
-        }
-        (el.style as any).backdropFilter = 'blur(15px)';
-        (el.style as any).webkitBackdropFilter = 'blur(15px)';
-        el.style.backgroundClip = 'padding-box';
-        el.style.color = 'var(--text-normal)';
-        el.style.whiteSpace = 'pre-wrap';
-        // Enable interactions so users can hover/scroll inside popup
-        el.style.pointerEvents = 'auto';
-        // Allow text selection even if parent has user-select: none
-        ;(el.style as any).userSelect = 'text';
-        ;(el.style as any).webkitUserSelect = 'text';
-        try {
-          // Prevent jsMind from hijacking mouse events while still allowing selection
-          const stop = (ev: Event) => ev.stopPropagation();
-          el.addEventListener('mousedown', stop);
-          el.addEventListener('mouseup', stop);
-          el.addEventListener('click', stop);
-          el.addEventListener('dblclick', stop);
-        } catch {}
-        this.containerElDiv.appendChild(el);
-        this.hoverPopupEl = el;
-      }
-      // Re-apply theme-aware background/border each time we show (handles theme switch)
-      try {
-        const isDarkNow = document.body.classList.contains('theme-dark');
-        this.hoverPopupEl!.style.setProperty('border', isDarkNow ? '1px solid rgba(255,255,255,0.18)' : '1px solid rgba(0,0,0,0.12)', 'important');
-        this.hoverPopupEl!.style.setProperty('background', isDarkNow ? 'rgba(30,30,30,0.68)' : 'rgba(255,255,255,0.85)', 'important');
-      } catch {}
-      // Keep popup visible when mouse enters the popup area; hide on leave only if not entering a node
-      try {
-        const popup = this.hoverPopupEl!;
-        if (!(popup as any).__mm_popup_bound) {
-          popup.addEventListener('mouseleave', (ev: MouseEvent) => {
-            const rel = ev.relatedTarget as HTMLElement | null;
-            const intoNode = rel && (rel.closest ? rel.closest('jmnode') : null);
-            if (intoNode) return;
-            // Delay slightly to tolerate small gaps leaving popup into another node
-            if (this.hoverHideTimeoutId != null) { try { window.clearTimeout(this.hoverHideTimeoutId); } catch {} }
-            this.hoverHideTimeoutId = window.setTimeout(() => {
-              this.hoverHideTimeoutId = null;
-              this.hideHoverPopup();
-            }, 150);
-          });
-          (popup as any).__mm_popup_bound = true;
-        }
-      } catch {}
-      // Re-append if lost on refresh
-      if (this.hoverPopupEl && this.hoverPopupEl.parentElement !== this.containerElDiv) {
-        this.containerElDiv.appendChild(this.hoverPopupEl);
-      }
-      // Cancel any pending hide when (re)showing the popup
-      if (this.hoverHideTimeoutId != null) { try { window.clearTimeout(this.hoverHideTimeoutId); } catch {} this.hoverHideTimeoutId = null; }
-      this.hoverPopupForNodeId = nodeId;
-      // Render markdown preview into popup
-      const popup = this.hoverPopupEl!;
-      try { popup.classList.add('markdown-rendered'); } catch {}
-      popup.style.whiteSpace = 'normal';
-      popup.innerHTML = '';
-      // Add title line for the current node
-      try {
-        const fromCache = (this.headingsCache || []).find(h => h.id === nodeId)?.title;
-        const fromJm = this.jm?.get_node?.(nodeId)?.topic;
-        const titleTextRaw = (typeof fromCache === 'string' && fromCache.length > 0) ? fromCache : (typeof fromJm === 'string' ? fromJm : '');
-        const titleText = (titleTextRaw && titleTextRaw.trim().length > 0) ? titleTextRaw.trim() : '新标题';
-        const titleEl = document.createElement('div');
-        titleEl.className = 'mm-popup-title';
-        titleEl.textContent = titleText;
-        popup.appendChild(titleEl);
-      } catch {}
-      try {
-        // Use Obsidian's renderer to get theme-consistent preview
-        MarkdownRenderer.renderMarkdown(body.trim(), popup, this.file?.path ?? '', this.plugin);
-      } catch {
-        // Fallback to plain text if rendering fails
-        const fallback = document.createElement('div');
-        fallback.textContent = body.trim();
-        popup.appendChild(fallback);
-      }
-      this.updateHoverPopupPosition();
-      // Follow transforms while visible
-      if (this.hoverPopupRAF == null) {
-        const tick = () => {
-          this.updateHoverPopupPosition();
-          if (this.hoverPopupEl && this.hoverPopupEl.style.display !== 'none') {
-            this.hoverPopupRAF = window.requestAnimationFrame(tick);
-          } else {
-            if (this.hoverPopupRAF != null) { try { window.cancelAnimationFrame(this.hoverPopupRAF); } catch {}; this.hoverPopupRAF = null; }
-          }
-        };
-        this.hoverPopupRAF = window.requestAnimationFrame(tick);
-      }
-    } catch {}
+    toolsShowHoverPopup(nodeId, {
+      containerElDiv: this.containerElDiv,
+      jm: this.jm,
+      app: this.app,
+      plugin: this.plugin,
+      file: this.file,
+      shouldMindmapDriveMarkdown: () => this.shouldMindmapDriveMarkdown(),
+      isMindmapEditingActive: () => this.isMindmapEditingActive(),
+      hoverPopupEl: this.hoverPopupEl,
+      hoverPopupForNodeId: this.hoverPopupForNodeId,
+      hoverPopupRAF: this.hoverPopupRAF,
+      hoverHideTimeoutId: this.hoverHideTimeoutId,
+      setHoverPopupEl: (el) => { this.hoverPopupEl = el; },
+      setHoverPopupForNodeId: (id) => { this.hoverPopupForNodeId = id; },
+      setHoverPopupRAF: (id) => { this.hoverPopupRAF = id; },
+      setHoverHideTimeoutId: (id) => { this.hoverHideTimeoutId = id; },
+      extractNodeImmediateBody: (id) => this.extractNodeImmediateBody(id),
+      updateHoverPopupPosition: () => this.updateHoverPopupPosition(),
+    });
   }
 
   private hideHoverPopup() {
-    try {
-      if (this.hoverPopupEl) this.hoverPopupEl.style.display = 'none';
-      this.hoverPopupForNodeId = null;
-      if (this.hoverPopupRAF != null) { try { window.cancelAnimationFrame(this.hoverPopupRAF); } catch {}; this.hoverPopupRAF = null; }
-    } catch {}
+    toolsHideHoverPopup({
+      containerElDiv: this.containerElDiv,
+      jm: this.jm,
+      app: this.app,
+      plugin: this.plugin,
+      file: this.file,
+      shouldMindmapDriveMarkdown: () => this.shouldMindmapDriveMarkdown(),
+      isMindmapEditingActive: () => this.isMindmapEditingActive(),
+      hoverPopupEl: this.hoverPopupEl,
+      hoverPopupForNodeId: this.hoverPopupForNodeId,
+      hoverPopupRAF: this.hoverPopupRAF,
+      hoverHideTimeoutId: this.hoverHideTimeoutId,
+      setHoverPopupEl: (el) => { this.hoverPopupEl = el; },
+      setHoverPopupForNodeId: (id) => { this.hoverPopupForNodeId = id; },
+      setHoverPopupRAF: (id) => { this.hoverPopupRAF = id; },
+      setHoverHideTimeoutId: (id) => { this.hoverHideTimeoutId = id; },
+      extractNodeImmediateBody: (id) => this.extractNodeImmediateBody(id),
+      updateHoverPopupPosition: () => this.updateHoverPopupPosition(),
+    });
   }
 
   private async deleteHeadingById(nodeId: string) {
