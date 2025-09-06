@@ -129,7 +129,19 @@ function buildThemesCss() {
 
 // main.ts
 var VIEW_TYPE_MINDMAP = "obsidian-jsmind-mindmap-view";
+var __mm_lastHeadingsText = null;
+var __mm_lastHeadingsRes = null;
+var __mm_lastHeadingsTs = 0;
 function computeHeadingSections(markdownText) {
+  try {
+    const now = Date.now();
+    if (__mm_lastHeadingsRes && now - __mm_lastHeadingsTs <= 1e3) {
+      if (__mm_lastHeadingsText != null && __mm_lastHeadingsText.length === markdownText.length) {
+        return __mm_lastHeadingsRes;
+      }
+    }
+  } catch {
+  }
   const lines = markdownText.split(/\n/);
   const headingRegex = /^(#{1,6})\s+(.*)$/;
   const headingsTemp = [];
@@ -213,6 +225,12 @@ function computeHeadingSections(markdownText) {
       stack[stack.length - 1].children.push(h);
     }
     stack.push(h);
+  }
+  try {
+    __mm_lastHeadingsText = markdownText;
+    __mm_lastHeadingsRes = headings;
+    __mm_lastHeadingsTs = Date.now();
+  } catch {
   }
   return headings;
 }

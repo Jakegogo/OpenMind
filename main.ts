@@ -23,7 +23,19 @@ type HeadingNode = {
 };
 
 // TODO 添加缓存
+let __mm_lastHeadingsText: string | null = null;
+let __mm_lastHeadingsRes: HeadingNode[] | null = null;
+let __mm_lastHeadingsTs: number = 0;
+
 function computeHeadingSections(markdownText: string): HeadingNode[] {
+  try {
+    const now = Date.now();
+    if (__mm_lastHeadingsRes && (now - __mm_lastHeadingsTs) <= 3000) {
+      if (__mm_lastHeadingsText != null && __mm_lastHeadingsText.length === markdownText.length) {
+        return __mm_lastHeadingsRes;
+      }
+    }
+  } catch {}
   const lines = markdownText.split(/\n/);
   const headingRegex = /^(#{1,6})\s+(.*)$/;
   const headingsTemp: Array<Omit<HeadingNode, 'end' | 'headingTextEnd' | 'children' | 'parentId'> & { raw: string; style: 'atx' | 'setext' }> = [];
@@ -108,6 +120,11 @@ function computeHeadingSections(markdownText: string): HeadingNode[] {
     }
     stack.push(h);
   }
+  try {
+    __mm_lastHeadingsText = markdownText;
+    __mm_lastHeadingsRes = headings;
+    __mm_lastHeadingsTs = Date.now();
+  } catch {}
   return headings;
 }
 
