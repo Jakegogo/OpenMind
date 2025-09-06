@@ -152,7 +152,7 @@ class MindmapView extends ItemView {
   // Selection and sync state (mindmap <-> markdown)
   private suppressSync: boolean = false;              // guard to avoid feedback loops while selecting in jm
   private lastSyncedNodeId: string | null = null;     // last node id driven into selection to dedupe work
-  private editorSyncIntervalId: number | null = null; // polling timer id for cursor-only movements
+  // removed: private editorSyncIntervalId: number | null = null;
 
   // Viewport/centering management
   private prevViewport: { nodesTransform: string | null; canvasTransform: string | null } | null = null; // saved transforms across re-render
@@ -1103,10 +1103,7 @@ class MindmapView extends ItemView {
       this.register(() => this.containerElDiv && this.containerElDiv.removeEventListener('scroll', scrollHandler));
     }
 
-    // Poll cursor movement (covers pure cursor move without change)
-    const id = window.setInterval(() => { trySync(); }, 400);
-    this.editorSyncIntervalId = id as unknown as number;
-    this.registerInterval(id as unknown as number);
+    // Removed cursor-only polling to rely on scroll and explicit interactions
 
     // Scroll-based top heading sync when enabled
     const attachScrollSync = () => {
@@ -1121,13 +1118,23 @@ class MindmapView extends ItemView {
       if (!activeMd) return;
       const scroller = (activeMd as any).contentEl?.querySelector?.('.cm-scroller');
       if (!scroller) return;
-      // Enter edit when the user clicks inside the editor area
+      // Enter edit when the user clicks inside the editor area, and sync selection after click
       try {
         const cmRoot = (activeMd as any).contentEl?.querySelector?.('.cm-editor');
         if (cmRoot) {
-          const onEditMouseDown = () => { this.enterEdit(); };
+          const onEditMouseDown = () => {
+            this.enterEdit();
+          };
+          const onEditMouseUp = () => {
+            const run = () => { try { /* sync mindmap to current cursor */ (trySync as any)(); } catch {} };
+            if (typeof window.requestAnimationFrame === 'function') window.requestAnimationFrame(run); else setTimeout(run, 0);
+          };
           cmRoot.addEventListener('mousedown', onEditMouseDown, true);
-          this.register(() => cmRoot && cmRoot.removeEventListener('mousedown', onEditMouseDown, true));
+          cmRoot.addEventListener('mouseup', onEditMouseUp, true);
+          this.register(() => {
+            try { cmRoot.removeEventListener('mousedown', onEditMouseDown, true); } catch {}
+            try { cmRoot.removeEventListener('mouseup', onEditMouseUp, true); } catch {}
+          });
         }
       } catch {}
       const scheduleRun = () => {

@@ -260,8 +260,7 @@ var MindmapView = class extends import_obsidian.ItemView {
     // guard to avoid feedback loops while selecting in jm
     this.lastSyncedNodeId = null;
     // last node id driven into selection to dedupe work
-    this.editorSyncIntervalId = null;
-    // polling timer id for cursor-only movements
+    // removed: private editorSyncIntervalId: number | null = null;
     // Viewport/centering management
     this.prevViewport = null;
     // saved transforms across re-render
@@ -1276,11 +1275,6 @@ var MindmapView = class extends import_obsidian.ItemView {
       this.containerElDiv.addEventListener("scroll", scrollHandler);
       this.register(() => this.containerElDiv && this.containerElDiv.removeEventListener("scroll", scrollHandler));
     }
-    const id = window.setInterval(() => {
-      trySync();
-    }, 400);
-    this.editorSyncIntervalId = id;
-    this.registerInterval(id);
     const attachScrollSync = () => {
       try {
         if (this.scrollSyncEl && this.scrollSyncHandler) {
@@ -1299,8 +1293,28 @@ var MindmapView = class extends import_obsidian.ItemView {
           const onEditMouseDown = () => {
             this.enterEdit();
           };
+          const onEditMouseUp = () => {
+            const run = () => {
+              try {
+                trySync();
+              } catch {
+              }
+            };
+            if (typeof window.requestAnimationFrame === "function") window.requestAnimationFrame(run);
+            else setTimeout(run, 0);
+          };
           cmRoot.addEventListener("mousedown", onEditMouseDown, true);
-          this.register(() => cmRoot && cmRoot.removeEventListener("mousedown", onEditMouseDown, true));
+          cmRoot.addEventListener("mouseup", onEditMouseUp, true);
+          this.register(() => {
+            try {
+              cmRoot.removeEventListener("mousedown", onEditMouseDown, true);
+            } catch {
+            }
+            try {
+              cmRoot.removeEventListener("mouseup", onEditMouseUp, true);
+            } catch {
+            }
+          });
         }
       } catch {
       }
