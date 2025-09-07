@@ -187,7 +187,6 @@ class MindmapView extends ItemView {
   private headingsCache: HeadingNode[] = [];
 
   // Selection and sync state (mindmap <-> markdown)
-  private suppressSync: boolean = false;              // guard to avoid feedback loops while selecting in jm
   private lastSyncedNodeId: string | null = null;     // last node id driven into selection to dedupe work
   // removed: private editorSyncIntervalId: number | null = null;
 
@@ -207,10 +206,6 @@ class MindmapView extends ItemView {
   // Visibility/suspension controls (skip heavy work when hidden/offscreen)
   private isSuspended: boolean = false;               // whether view is currently suspended
   private pendingDirty: boolean = false;              // if changes occurred while suspended, refresh on resume
-
-  // Inline editing sizer helpers (for adaptive jmnode width while editing)
-  private editingSizerRAF: number | null = null;
-  private editingSizerNodeEl: HTMLElement | null = null;
 
   // Hover popup (node body preview)
   private hoverPopupEl: HTMLDivElement | null = null; // popup element for showing immediate body text
@@ -615,11 +610,8 @@ class MindmapView extends ItemView {
     this.restoreViewport(this.prevViewport);
     if (prevSelectedId) {
       try {
-        this.suppressSync = true;
         this.jm.select_node(prevSelectedId);
-      } finally {
-        setTimeout(() => { this.suppressSync = false; }, 0);
-      }
+      } finally {}
     }
     try { this.jm.expand_all && this.jm.expand_all(); } catch {}
     // Apply persisted collapsed states for current file after expand_all
@@ -692,10 +684,10 @@ class MindmapView extends ItemView {
               this.revealTimeoutId = window.setTimeout(() => {
                 // if a dblclick just happened, skip
                 if (Date.now() - this.lastDblClickAtMs < 350) return;
-                this.lastSyncedNodeId = nodeId;
                 // In preview, reveal and focus editor to show selection, but FSM stays in 'preview'
                 this.revealHeadingById(nodeId, { focusEditor: true, activateLeaf: true });
                 this.showAddButton(nodeId);
+                this.lastSyncedNodeId = nodeId;
                 this.revealTimeoutId = null;
               }, 200);
             }
@@ -1021,24 +1013,19 @@ class MindmapView extends ItemView {
     if (!this.jm) return;
     try {
       const node = this.jm.get_node ? this.jm.get_node(nodeId) : null;
-      this.suppressSync = true;
-      try {
-        if (this.jm.select_node) this.jm.select_node(nodeId);
-        // Only center in edit mode per FSM rule
-        const allowCenter = !!(center && node && this.shouldCenterOnMarkdownSelection());
-        if (allowCenter) {
-          // Defer centering until selection/layout settles
-          this.allowCenterRoot = true;
-          window.setTimeout(() => {
-            try { this.jm.center_node && this.jm.center_node(node); } catch {}
-            try { this.jm.view && this.jm.view.center_node && this.jm.view.center_node(node); } catch {}
-            try { this.jm.resize && this.jm.resize(); } catch {}
-            // reset permission to avoid unintended future root centering
-            this.allowCenterRoot = false;
-          }, 30);
-        }
-      } finally {
-        setTimeout(() => { this.suppressSync = false; }, 0);
+      if (this.jm.select_node) this.jm.select_node(nodeId);
+      // Only center in edit mode per FSM rule
+      const allowCenter = !!(center && node && this.shouldCenterOnMarkdownSelection());
+      if (allowCenter) {
+        // Defer centering until selection/layout settles
+        this.allowCenterRoot = true;
+        window.setTimeout(() => {
+          try { this.jm.center_node && this.jm.center_node(node); } catch {}
+          try { this.jm.view && this.jm.view.center_node && this.jm.view.center_node(node); } catch {}
+          try { this.jm.resize && this.jm.resize(); } catch {}
+          // reset permission to avoid unintended future root centering
+          this.allowCenterRoot = false;
+        }, 30);
       }
     } catch {}
   }
@@ -1111,11 +1098,11 @@ class MindmapView extends ItemView {
       }
       if (current && current.id !== this.lastSyncedNodeId) {
         // Always record latest id to avoid repeated attempts
-        this.lastSyncedNodeId = current.id;
         const center = this.shouldCenterOnMarkdownSelection();
         const shouldSelectMindmap = this.shouldFollowScroll() || this.shouldCenterOnMarkdownSelection();
         if (shouldSelectMindmap) {
           this.selectMindmapNodeById(current.id, center);
+          this.lastSyncedNodeId = current.id;
         }
         if (this.shouldFollowScroll()) this.ensureMindmapNodeVisible(current.id);
         // Do not show buttons when markdown drives selection
@@ -1213,11 +1200,11 @@ class MindmapView extends ItemView {
               }
             }
             if (best && best.id !== this.lastSyncedNodeId) {
-              this.lastSyncedNodeId = best.id;
               const center = false;
               if (this.shouldFollowScroll()) {
                 this.selectMindmapNodeById(best.id, center);
                 this.ensureMindmapNodeVisible(best.id);
+                this.lastSyncedNodeId = best.id;
               }
             }
           } catch {}
@@ -1278,7 +1265,7 @@ class MindmapView extends ItemView {
       addButtonEl: this.addButtonEl,
       deleteButtonEl: this.deleteButtonEl,
       addButtonForNodeId: this.addButtonForNodeId,
-      setAddButtonEl: (el) => { this.addButtonEl = el; },
+      setAddButtonEl: (el) => { this.addButtonEl = el;},
       setDeleteButtonEl: (el) => { this.deleteButtonEl = el; },
       setAddButtonForNodeId: (id) => { this.addButtonForNodeId = id; },
       updateAddButtonPosition: () => this.updateAddButtonPosition(),

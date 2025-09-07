@@ -206,9 +206,8 @@ function toolsShowAddButton(nodeId, deps) {
       deps.containerElDiv.appendChild(btn);
       deps.setAddButtonEl(btn);
     }
-    if (deps.addButtonEl) {
+    if (deps.addButtonEl && deps.addButtonEl.parentElement !== deps.containerElDiv) {
       deps.containerElDiv.appendChild(deps.addButtonEl);
-      deps.addButtonEl.style.display = "block";
     }
     deps.addButtonEl.onclick = (e) => {
       e.stopPropagation();
@@ -234,9 +233,8 @@ function toolsShowAddButton(nodeId, deps) {
       deps.containerElDiv.appendChild(del);
       deps.setDeleteButtonEl(del);
     }
-    if (deps.deleteButtonEl) {
+    if (deps.deleteButtonEl && deps.deleteButtonEl.parentElement !== deps.containerElDiv) {
       deps.containerElDiv.appendChild(deps.deleteButtonEl);
-      deps.deleteButtonEl.style.display = "block";
     }
     deps.deleteButtonEl.onclick = (e) => {
       e.stopPropagation();
@@ -558,8 +556,6 @@ var MindmapView = class extends import_obsidian2.ItemView {
     // Parsed markdown cache (structure used to build/update mindmap)
     this.headingsCache = [];
     // Selection and sync state (mindmap <-> markdown)
-    this.suppressSync = false;
-    // guard to avoid feedback loops while selecting in jm
     this.lastSyncedNodeId = null;
     // last node id driven into selection to dedupe work
     // removed: private editorSyncIntervalId: number | null = null;
@@ -588,9 +584,6 @@ var MindmapView = class extends import_obsidian2.ItemView {
     // whether view is currently suspended
     this.pendingDirty = false;
     // if changes occurred while suspended, refresh on resume
-    // Inline editing sizer helpers (for adaptive jmnode width while editing)
-    this.editingSizerRAF = null;
-    this.editingSizerNodeEl = null;
     // Hover popup (node body preview)
     this.hoverPopupEl = null;
     // popup element for showing immediate body text
@@ -995,12 +988,8 @@ var MindmapView = class extends import_obsidian2.ItemView {
     this.restoreViewport(this.prevViewport);
     if (prevSelectedId) {
       try {
-        this.suppressSync = true;
         this.jm.select_node(prevSelectedId);
       } finally {
-        setTimeout(() => {
-          this.suppressSync = false;
-        }, 0);
       }
     }
     try {
@@ -1083,9 +1072,9 @@ var MindmapView = class extends import_obsidian2.ItemView {
               if (this.revealTimeoutId != null) window.clearTimeout(this.revealTimeoutId);
               this.revealTimeoutId = window.setTimeout(() => {
                 if (Date.now() - this.lastDblClickAtMs < 350) return;
-                this.lastSyncedNodeId = nodeId;
                 this.revealHeadingById(nodeId, { focusEditor: true, activateLeaf: true });
                 this.showAddButton(nodeId);
+                this.lastSyncedNodeId = nodeId;
                 this.revealTimeoutId = null;
               }, 200);
             }
@@ -1450,32 +1439,25 @@ var MindmapView = class extends import_obsidian2.ItemView {
     if (!this.jm) return;
     try {
       const node = this.jm.get_node ? this.jm.get_node(nodeId) : null;
-      this.suppressSync = true;
-      try {
-        if (this.jm.select_node) this.jm.select_node(nodeId);
-        const allowCenter = !!(center && node && this.shouldCenterOnMarkdownSelection());
-        if (allowCenter) {
-          this.allowCenterRoot = true;
-          window.setTimeout(() => {
-            try {
-              this.jm.center_node && this.jm.center_node(node);
-            } catch {
-            }
-            try {
-              this.jm.view && this.jm.view.center_node && this.jm.view.center_node(node);
-            } catch {
-            }
-            try {
-              this.jm.resize && this.jm.resize();
-            } catch {
-            }
-            this.allowCenterRoot = false;
-          }, 30);
-        }
-      } finally {
-        setTimeout(() => {
-          this.suppressSync = false;
-        }, 0);
+      if (this.jm.select_node) this.jm.select_node(nodeId);
+      const allowCenter = !!(center && node && this.shouldCenterOnMarkdownSelection());
+      if (allowCenter) {
+        this.allowCenterRoot = true;
+        window.setTimeout(() => {
+          try {
+            this.jm.center_node && this.jm.center_node(node);
+          } catch {
+          }
+          try {
+            this.jm.view && this.jm.view.center_node && this.jm.view.center_node(node);
+          } catch {
+          }
+          try {
+            this.jm.resize && this.jm.resize();
+          } catch {
+          }
+          this.allowCenterRoot = false;
+        }, 30);
       }
     } catch {
     }
@@ -1555,11 +1537,11 @@ var MindmapView = class extends import_obsidian2.ItemView {
         }
       }
       if (current && current.id !== this.lastSyncedNodeId) {
-        this.lastSyncedNodeId = current.id;
         const center = this.shouldCenterOnMarkdownSelection();
         const shouldSelectMindmap = this.shouldFollowScroll() || this.shouldCenterOnMarkdownSelection();
         if (shouldSelectMindmap) {
           this.selectMindmapNodeById(current.id, center);
+          this.lastSyncedNodeId = current.id;
         }
         if (this.shouldFollowScroll()) this.ensureMindmapNodeVisible(current.id);
         this.hideAddButton();
@@ -1669,11 +1651,11 @@ var MindmapView = class extends import_obsidian2.ItemView {
               }
             }
             if (best && best.id !== this.lastSyncedNodeId) {
-              this.lastSyncedNodeId = best.id;
               const center = false;
               if (this.shouldFollowScroll()) {
                 this.selectMindmapNodeById(best.id, center);
                 this.ensureMindmapNodeVisible(best.id);
+                this.lastSyncedNodeId = best.id;
               }
             }
           } catch {
