@@ -1034,7 +1034,7 @@ class MindmapView extends ItemView {
         window.setTimeout(() => {
           try { this.jm.center_node && this.jm.center_node(node); } catch {}
           try { this.jm.view && this.jm.view.center_node && this.jm.view.center_node(node); } catch {}
-          try { this.jm.resize && this.jm.resize(); } catch {}
+          // try { this.jm.resize && this.jm.resize(); } catch {}
           // reset permission to avoid unintended future root centering
           this.allowCenterRoot = false;
         }, 30);
@@ -1080,7 +1080,7 @@ class MindmapView extends ItemView {
         this.allowCenterRoot = true;
         try { this.jm.center_node && this.jm.center_node(node); } catch {}
         try { this.jm.view && this.jm.view.center_node && this.jm.view.center_node(node); } catch {}
-        try { this.jm.resize && this.jm.resize(); } catch {}
+        // try { this.jm.resize && this.jm.resize(); } catch {}
         this.allowCenterRoot = false;
       }
     } catch {}

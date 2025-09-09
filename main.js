@@ -1463,10 +1463,6 @@ var MindmapView = class extends import_obsidian2.ItemView {
             this.jm.view && this.jm.view.center_node && this.jm.view.center_node(node);
           } catch {
           }
-          try {
-            this.jm.resize && this.jm.resize();
-          } catch {
-          }
           this.allowCenterRoot = false;
         }, 30);
       }
@@ -1515,10 +1511,6 @@ var MindmapView = class extends import_obsidian2.ItemView {
         }
         try {
           this.jm.view && this.jm.view.center_node && this.jm.view.center_node(node);
-        } catch {
-        }
-        try {
-          this.jm.resize && this.jm.resize();
         } catch {
         }
         this.allowCenterRoot = false;
