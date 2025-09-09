@@ -27,261 +27,461 @@ var import_obsidian2 = require("obsidian");
 
 // tools.ts
 var import_obsidian = require("obsidian");
-function toolsShowHoverPopup(nodeId, deps) {
-  try {
-    if (!deps.plugin.settings?.enablePopup) {
-      toolsHideHoverPopup(deps);
-      return;
-    }
-    if (!deps.containerElDiv) return;
-    if (deps.isMindmapEditingActive()) return;
-    const body = deps.extractNodeImmediateBody(nodeId);
-    if (!body || body.trim().length === 0) {
-      toolsHideHoverPopup(deps);
-      return;
-    }
-    let el = deps.hoverPopupEl;
-    if (!el) {
-      el = document.createElement("div");
-      try {
-        el.classList.add("mm-popup");
-      } catch {
-      }
-      el.style.position = "absolute";
-      el.style.zIndex = "6";
-      el.style.minWidth = "220px";
-      el.style.maxWidth = "420px";
-      el.style.maxHeight = "240px";
-      el.style.overflow = "auto";
-      el.style.padding = "4px 6px";
-      el.style.borderRadius = "6px";
-      el.style.boxShadow = "0 8px 24px rgba(0,0,0,0.25)";
-      {
-        const isDark = document.body.classList.contains("theme-dark");
-        el.style.setProperty("border", isDark ? "1px solid rgba(255,255,255,0.18)" : "1px solid rgba(0,0,0,0.12)", "important");
-        el.style.setProperty("background", isDark ? "rgba(30,30,30,0.68)" : "rgba(255,255,255,0.85)", "important");
-      }
-      el.style.backdropFilter = "blur(15px)";
-      el.style.webkitBackdropFilter = "blur(15px)";
-      el.style.backgroundClip = "padding-box";
-      el.style.color = "var(--text-normal)";
-      el.style.whiteSpace = "pre-wrap";
-      el.style.pointerEvents = "auto";
-      ;
-      el.style.userSelect = "text";
-      ;
-      el.style.webkitUserSelect = "text";
-      try {
-        const stop = (ev) => ev.stopPropagation();
-        el.addEventListener("mousedown", stop);
-        el.addEventListener("mouseup", stop);
-        el.addEventListener("click", stop);
-        el.addEventListener("dblclick", stop);
-      } catch {
-      }
-      deps.containerElDiv.appendChild(el);
-      deps.setHoverPopupEl(el);
-    }
+var PopupController = class {
+  constructor() {
+    this.containerElDiv = null;
+    this.jm = null;
+    this.file = null;
+    this.shouldMindmapDriveMarkdown = () => false;
+    this.isMindmapEditingActive = () => false;
+    this.hoverPopupEl = null;
+    this.hoverPopupForNodeId = null;
+    this.hoverPopupRAF = null;
+    this.hoverHideTimeoutId = null;
+    this.lastFileContent = "";
+    this.computeHeadingSections = () => [];
+  }
+  show(nodeId) {
     try {
-      const isDarkNow = document.body.classList.contains("theme-dark");
-      deps.hoverPopupEl.style.setProperty("border", isDarkNow ? "1px solid rgba(255,255,255,0.18)" : "1px solid rgba(0,0,0,0.12)", "important");
-      deps.hoverPopupEl.style.setProperty("background", isDarkNow ? "rgba(30,30,30,0.68)" : "rgba(255,255,255,0.85)", "important");
-    } catch {
-    }
-    try {
-      const popup2 = deps.hoverPopupEl;
-      if (!popup2.__mm_popup_bound) {
-        popup2.addEventListener("mouseleave", (ev) => {
-          const rel = ev.relatedTarget;
-          const intoNode = rel && (rel.closest ? rel.closest("jmnode") : null);
-          if (intoNode) return;
-          if (deps.hoverHideTimeoutId != null) {
-            try {
-              window.clearTimeout(deps.hoverHideTimeoutId);
-            } catch {
-            }
-          }
-          deps.setHoverHideTimeoutId(window.setTimeout(() => {
-            deps.setHoverHideTimeoutId(null);
-            toolsHideHoverPopup(deps);
-          }, 150));
-        });
-        popup2.__mm_popup_bound = true;
+      if (!this.plugin?.settings?.enablePopup) {
+        this.hide();
+        return;
       }
-    } catch {
-    }
-    if (deps.hoverPopupEl && deps.hoverPopupEl.parentElement !== deps.containerElDiv) {
-      deps.containerElDiv.appendChild(deps.hoverPopupEl);
-    }
-    if (deps.hoverHideTimeoutId != null) {
-      try {
-        window.clearTimeout(deps.hoverHideTimeoutId);
-      } catch {
+      if (!this.containerElDiv) return;
+      if (this.isMindmapEditingActive()) return;
+      const body = this.extractNodeImmediateBody(nodeId);
+      if (!body || body.trim().length === 0) {
+        this.hide();
+        return;
       }
-      deps.setHoverHideTimeoutId(null);
-    }
-    deps.setHoverPopupForNodeId(nodeId);
-    const popup = deps.hoverPopupEl;
-    try {
-      popup.classList.add("markdown-rendered");
-    } catch {
-    }
-    popup.style.whiteSpace = "normal";
-    popup.innerHTML = "";
-    try {
-    } catch {
-    }
-    try {
-      import_obsidian.MarkdownRenderer.renderMarkdown(body.trim(), popup, deps.file?.path ?? "", deps.plugin);
-    } catch {
-      const fallback = document.createElement("div");
-      fallback.textContent = body.trim();
-      popup.appendChild(fallback);
-    }
-    deps.updateHoverPopupPosition();
-    if (deps.hoverPopupRAF == null) {
-      const tick = () => {
-        deps.updateHoverPopupPosition();
-        if (deps.hoverPopupEl && deps.hoverPopupEl.style.display !== "none") {
-          deps.setHoverPopupRAF(window.requestAnimationFrame(tick));
-        } else {
-          if (deps.hoverPopupRAF != null) {
-            try {
-              window.cancelAnimationFrame(deps.hoverPopupRAF);
-            } catch {
-            }
-            ;
-            deps.setHoverPopupRAF(null);
-          }
+      let el = this.hoverPopupEl;
+      if (!el) {
+        el = document.createElement("div");
+        try {
+          el.classList.add("mm-popup");
+        } catch {
         }
-      };
-      deps.setHoverPopupRAF(window.requestAnimationFrame(tick));
-    }
-  } catch {
-  }
-}
-function toolsHideHoverPopup(deps) {
-  try {
-    if (deps.hoverPopupEl) deps.hoverPopupEl.style.display = "none";
-    deps.setHoverPopupForNodeId(null);
-    if (deps.hoverPopupRAF != null) {
+        el.style.position = "absolute";
+        el.style.zIndex = "6";
+        el.style.minWidth = "220px";
+        el.style.maxWidth = "420px";
+        el.style.maxHeight = "240px";
+        el.style.overflow = "auto";
+        el.style.padding = "4px 6px";
+        el.style.borderRadius = "6px";
+        el.style.boxShadow = "0 8px 24px rgba(0,0,0,0.25)";
+        {
+          const isDark = document.body.classList.contains("theme-dark");
+          el.style.setProperty("border", isDark ? "1px solid rgba(255,255,255,0.18)" : "1px solid rgba(0,0,0,0.12)", "important");
+          el.style.setProperty("background", isDark ? "rgba(30,30,30,0.68)" : "rgba(255,255,255,0.85)", "important");
+        }
+        el.style.backdropFilter = "blur(15px)";
+        el.style.webkitBackdropFilter = "blur(15px)";
+        el.style.backgroundClip = "padding-box";
+        el.style.color = "var(--text-normal)";
+        el.style.whiteSpace = "pre-wrap";
+        el.style.pointerEvents = "auto";
+        ;
+        el.style.userSelect = "text";
+        ;
+        el.style.webkitUserSelect = "text";
+        try {
+          const stop = (ev) => ev.stopPropagation();
+          el.addEventListener("mousedown", stop);
+          el.addEventListener("mouseup", stop);
+          el.addEventListener("click", stop);
+          el.addEventListener("dblclick", stop);
+        } catch {
+        }
+        this.containerElDiv.appendChild(el);
+        this.hoverPopupEl = el;
+      }
       try {
-        window.cancelAnimationFrame(deps.hoverPopupRAF);
+        const isDarkNow = document.body.classList.contains("theme-dark");
+        this.hoverPopupEl.style.setProperty("border", isDarkNow ? "1px solid rgba(255,255,255,0.18)" : "1px solid rgba(0,0,0,0.12)", "important");
+        this.hoverPopupEl.style.setProperty("background", isDarkNow ? "rgba(30,30,30,0.68)" : "rgba(255,255,255,0.85)", "important");
       } catch {
       }
-      ;
-      deps.setHoverPopupRAF(null);
+      try {
+        const popup2 = this.hoverPopupEl;
+        if (!popup2.__mm_popup_bound) {
+          popup2.addEventListener("mouseleave", (ev) => {
+            const rel = ev.relatedTarget;
+            const intoNode = rel && (rel.closest ? rel.closest("jmnode") : null);
+            if (intoNode) return;
+            if (this.hoverHideTimeoutId != null) {
+              try {
+                window.clearTimeout(this.hoverHideTimeoutId);
+              } catch {
+              }
+            }
+            this.hoverHideTimeoutId = window.setTimeout(() => {
+              this.hoverHideTimeoutId = null;
+              this.hide();
+            }, 150);
+          });
+          popup2.__mm_popup_bound = true;
+        }
+      } catch {
+      }
+      if (this.hoverPopupEl && this.hoverPopupEl.parentElement !== this.containerElDiv) {
+        this.containerElDiv.appendChild(this.hoverPopupEl);
+      }
+      if (this.hoverHideTimeoutId != null) {
+        try {
+          window.clearTimeout(this.hoverHideTimeoutId);
+        } catch {
+        }
+        this.hoverHideTimeoutId = null;
+      }
+      this.hoverPopupForNodeId = nodeId;
+      const popup = this.hoverPopupEl;
+      try {
+        popup.classList.add("markdown-rendered");
+      } catch {
+      }
+      popup.style.whiteSpace = "normal";
+      popup.innerHTML = "";
+      try {
+        import_obsidian.MarkdownRenderer.renderMarkdown(body.trim(), popup, this.file?.path ?? "", this.plugin);
+      } catch {
+        const fallback = document.createElement("div");
+        fallback.textContent = body.trim();
+        popup.appendChild(fallback);
+      }
+      this.updatePosition();
+      if (this.hoverPopupRAF == null) {
+        const tick = () => {
+          this.updatePosition();
+          if (this.hoverPopupEl && this.hoverPopupEl.style.display !== "none") {
+            this.hoverPopupRAF = window.requestAnimationFrame(tick);
+          } else {
+            if (this.hoverPopupRAF != null) {
+              try {
+                window.cancelAnimationFrame(this.hoverPopupRAF);
+              } catch {
+              }
+              ;
+              this.hoverPopupRAF = null;
+            }
+          }
+        };
+        this.hoverPopupRAF = window.requestAnimationFrame(tick);
+      }
+    } catch {
     }
-  } catch {
   }
-}
-function toolsShowAddButton(nodeId, deps) {
-  try {
-    if (!deps.jm || !deps.containerElDiv) return;
-    if (!deps.shouldMindmapDriveMarkdown()) return;
-    if (deps.isMindmapEditingActive()) return;
-    const node = deps.jm.get_node?.(nodeId);
-    if (!node) {
-      toolsHideAddButton(deps);
-      return;
+  hide() {
+    try {
+      if (this.hoverPopupEl) this.hoverPopupEl.style.display = "none";
+      this.hoverPopupForNodeId = null;
+      if (this.hoverPopupRAF != null) {
+        try {
+          window.cancelAnimationFrame(this.hoverPopupRAF);
+        } catch {
+        }
+        ;
+        this.hoverPopupRAF = null;
+      }
+    } catch {
     }
-    let btn = deps.addButtonEl;
-    if (!btn) {
-      btn = document.createElement("button");
-      btn.textContent = "+";
-      btn.title = "Add child";
-      btn.style.position = "absolute";
-      btn.style.zIndex = "5";
-      btn.style.width = "22px";
-      btn.style.height = "22px";
-      btn.style.lineHeight = "22px";
-      btn.style.padding = "0";
-      btn.style.textAlign = "center";
-      btn.style.boxSizing = "border-box";
-      btn.style.borderRadius = "11px";
-      btn.style.border = "1px solid #90c2ff";
-      btn.style.background = "#e8f2ff";
-      btn.style.color = "#0b3d91";
-      btn.style.cursor = "pointer";
-      deps.containerElDiv.appendChild(btn);
-      deps.setAddButtonEl(btn);
-    }
-    if (deps.addButtonEl && deps.addButtonEl.parentElement !== deps.containerElDiv) {
-      deps.containerElDiv.appendChild(deps.addButtonEl);
-    }
-    deps.addButtonEl.onclick = (e) => {
-      e.stopPropagation();
-      deps.addChildUnder(nodeId);
-    };
-    if (!deps.deleteButtonEl) {
-      const del = document.createElement("button");
-      del.textContent = "\u2212";
-      del.title = "Delete node";
-      del.style.position = "absolute";
-      del.style.zIndex = "5";
-      del.style.width = "22px";
-      del.style.height = "22px";
-      del.style.lineHeight = "22px";
-      del.style.padding = "0";
-      del.style.textAlign = "center";
-      del.style.boxSizing = "border-box";
-      del.style.borderRadius = "11px";
-      del.style.border = "1px solid #ff9aa2";
-      del.style.background = "#ffecef";
-      del.style.color = "#cc0033";
-      del.style.cursor = "pointer";
-      deps.containerElDiv.appendChild(del);
-      deps.setDeleteButtonEl(del);
-    }
-    if (deps.deleteButtonEl && deps.deleteButtonEl.parentElement !== deps.containerElDiv) {
-      deps.containerElDiv.appendChild(deps.deleteButtonEl);
-    }
-    deps.deleteButtonEl.onclick = (e) => {
-      e.stopPropagation();
-      deps.deleteHeadingById(nodeId);
-    };
-    deps.setAddButtonForNodeId(nodeId);
-    deps.updateAddButtonPosition();
-    if (deps.addButtonRAF == null) {
-      const tick = () => {
-        deps.updateAddButtonPosition();
-        if (deps.addButtonEl && deps.addButtonEl.style.display !== "none") {
-          deps.setAddButtonRAF(window.requestAnimationFrame(tick));
+  }
+  updatePosition() {
+    try {
+      if (!this.hoverPopupEl || !this.containerElDiv || !this.hoverPopupForNodeId) return;
+      const nodeEl = this.containerElDiv.querySelector(`jmnode[nodeid="${this.hoverPopupForNodeId}"]`);
+      if (!nodeEl) return;
+      const rect = nodeEl.getBoundingClientRect();
+      const hostRect = this.containerElDiv.getBoundingClientRect();
+      const node = this.jm?.get_node?.(this.hoverPopupForNodeId);
+      const isLeft = node && node.direction === (window.jsMind?.direction?.left ?? "left");
+      const gap = 8;
+      const margin = 6;
+      const popupEl = this.hoverPopupEl;
+      if (!popupEl.offsetWidth || !popupEl.offsetHeight || popupEl.style.display === "none") {
+        popupEl.style.visibility = "hidden";
+        popupEl.style.display = "block";
+      }
+      const popupW = popupEl.offsetWidth || 220;
+      const popupH = popupEl.offsetHeight || 180;
+      let x = isLeft ? rect.left - hostRect.left - (popupW + gap) : rect.right - hostRect.left + gap;
+      if (!isLeft && x + popupW > hostRect.width - margin) {
+        x = rect.left - hostRect.left - (popupW + gap);
+      }
+      if (x < margin) x = margin;
+      const nodeLeft = rect.left - hostRect.left;
+      const nodeRight = rect.right - hostRect.left;
+      const popupLeft = x;
+      const popupRight = x + popupW;
+      const overlapsHorizontally = !(popupRight <= nodeLeft - gap || popupLeft >= nodeRight + gap);
+      let y = rect.top - hostRect.top;
+      if (overlapsHorizontally) {
+        const spaceBelow = hostRect.bottom - rect.bottom - margin;
+        const spaceAbove = rect.top - hostRect.top - margin;
+        if (spaceBelow >= popupH + gap || spaceBelow >= spaceAbove) {
+          y = rect.bottom - hostRect.top + gap;
         } else {
-          if (deps.addButtonRAF != null) {
+          y = rect.top - hostRect.top - popupH - gap;
+          if (y < margin) y = margin;
+        }
+      }
+      popupEl.style.left = `${x}px`;
+      popupEl.style.top = `${Math.max(0, y)}px`;
+      popupEl.style.display = "block";
+      popupEl.style.visibility = "visible";
+    } catch {
+    }
+  }
+  extractNodeImmediateBody(nodeId) {
+    try {
+      const content = this.lastFileContent || "";
+      if (!content) return "";
+      const headings = this.headingsCache && this.headingsCache.length ? this.headingsCache : this.computeHeadingSections(content);
+      const idx = headings.findIndex((h2) => h2.id === nodeId);
+      if (idx === -1) return "";
+      const h = headings[idx];
+      const startBody = Math.min(content.length, Math.max(0, h.headingTextEnd + 1));
+      const next = headings[idx + 1];
+      const endBody = next ? Math.max(startBody, next.start - 1) : Math.max(startBody, content.length);
+      const raw = content.slice(startBody, endBody);
+      return raw.replace(/^\s*\n/, "").trimEnd();
+    } catch {
+      return "";
+    }
+  }
+};
+var ButtonController = class {
+  constructor() {
+    this.containerElDiv = null;
+    this.jm = null;
+    this.file = null;
+    this.shouldMindmapDriveMarkdown = () => false;
+    this.isMindmapEditingActive = () => false;
+    this.addButtonEl = null;
+    this.deleteButtonEl = null;
+    this.addButtonForNodeId = null;
+    this.addButtonRAF = null;
+    this.deleteHeadingById = () => {
+    };
+    this.computeHeadingSections = () => [];
+  }
+  show(nodeId) {
+    try {
+      if (!this.jm || !this.containerElDiv) return;
+      if (!this.shouldMindmapDriveMarkdown()) return;
+      if (this.isMindmapEditingActive()) return;
+      const node = this.jm.get_node?.(nodeId);
+      if (!node) {
+        this.hide();
+        return;
+      }
+      let btn = this.addButtonEl;
+      if (!btn) {
+        btn = document.createElement("button");
+        btn.textContent = "+";
+        btn.title = "Add child";
+        btn.style.position = "absolute";
+        btn.style.zIndex = "5";
+        btn.style.width = "22px";
+        btn.style.height = "22px";
+        btn.style.lineHeight = "22px";
+        btn.style.padding = "0";
+        btn.style.textAlign = "center";
+        btn.style.boxSizing = "border-box";
+        btn.style.borderRadius = "11px";
+        btn.style.border = "1px solid #90c2ff";
+        btn.style.background = "#e8f2ff";
+        btn.style.color = "#0b3d91";
+        btn.style.cursor = "pointer";
+        this.containerElDiv.appendChild(btn);
+        this.addButtonEl = btn;
+      }
+      if (this.addButtonEl && this.addButtonEl.parentElement !== this.containerElDiv) {
+        this.containerElDiv.appendChild(this.addButtonEl);
+      }
+      this.addButtonEl.onclick = (e) => {
+        e.stopPropagation();
+        this.addChildUnder(nodeId);
+      };
+      if (!this.deleteButtonEl) {
+        const del = document.createElement("button");
+        del.textContent = "\u2212";
+        del.title = "Delete node";
+        del.style.position = "absolute";
+        del.style.zIndex = "5";
+        del.style.width = "22px";
+        del.style.height = "22px";
+        del.style.lineHeight = "22px";
+        del.style.padding = "0";
+        del.style.textAlign = "center";
+        del.style.boxSizing = "border-box";
+        del.style.borderRadius = "11px";
+        del.style.border = "1px solid #ff9aa2";
+        del.style.background = "#ffecef";
+        del.style.color = "#cc0033";
+        del.style.cursor = "pointer";
+        this.containerElDiv.appendChild(del);
+        this.deleteButtonEl = del;
+      }
+      if (this.deleteButtonEl && this.deleteButtonEl.parentElement !== this.containerElDiv) {
+        this.containerElDiv.appendChild(this.deleteButtonEl);
+      }
+      this.deleteButtonEl.onclick = (e) => {
+        e.stopPropagation();
+        this.deleteHeadingById(nodeId);
+      };
+      this.addButtonForNodeId = nodeId;
+      this.updatePosition();
+      if (this.addButtonRAF == null) {
+        const tick = () => {
+          this.updatePosition();
+          if (this.addButtonEl && this.addButtonEl.style.display !== "none") {
+            this.addButtonRAF = window.requestAnimationFrame(tick);
+          } else {
+            if (this.addButtonRAF != null) {
+              try {
+                window.cancelAnimationFrame(this.addButtonRAF);
+              } catch {
+              }
+              ;
+              this.addButtonRAF = null;
+            }
+          }
+        };
+        this.addButtonRAF = window.requestAnimationFrame(tick);
+      }
+      if (node.isroot && this.deleteButtonEl) {
+        this.deleteButtonEl.style.display = "none";
+      }
+    } catch {
+    }
+  }
+  hide() {
+    try {
+      if (this.addButtonEl) {
+        this.addButtonEl.style.display = "none";
+        this.addButtonForNodeId = null;
+        if (this.addButtonRAF != null) {
+          try {
+            window.cancelAnimationFrame(this.addButtonRAF);
+          } catch {
+          }
+          this.addButtonRAF = null;
+        }
+      }
+      if (this.deleteButtonEl) {
+        this.deleteButtonEl.style.display = "none";
+      }
+    } catch {
+    }
+  }
+  updatePosition() {
+    try {
+      if (!this.addButtonEl || !this.containerElDiv || !this.addButtonForNodeId) return;
+      const nodeEl = this.containerElDiv.querySelector(`jmnode[nodeid="${this.addButtonForNodeId}"]`);
+      if (!nodeEl) return;
+      const node = this.jm?.get_node?.(this.addButtonForNodeId);
+      const expanderEl = this.containerElDiv.querySelector(`jmexpander[nodeid="${this.addButtonForNodeId}"]`);
+      const rect = nodeEl.getBoundingClientRect();
+      const hostRect = this.containerElDiv.getBoundingClientRect();
+      const isLeft = node && node.direction === (window.jsMind?.direction?.left ?? "left");
+      const buttonSize = 22;
+      const gapBase = 8;
+      let xAdd = isLeft ? rect.left - hostRect.left - (buttonSize + gapBase + 6) : rect.right - hostRect.left + gapBase + 6;
+      if (expanderEl) {
+        const expRect = expanderEl.getBoundingClientRect();
+        if (!isLeft) {
+          const minLeft = expRect.right - hostRect.left + gapBase;
+          if (xAdd < minLeft) xAdd = minLeft;
+        } else {
+          const maxLeft = expRect.left - hostRect.left - (buttonSize + gapBase);
+          if (xAdd > maxLeft) xAdd = maxLeft;
+        }
+      }
+      const btnH = this.addButtonEl?.offsetHeight || 22;
+      const centerYRaw = rect.top - hostRect.top + (rect.height - btnH) / 2;
+      const centerY = Math.round(centerYRaw) - 3;
+      this.addButtonEl.style.left = `${xAdd}px`;
+      this.addButtonEl.style.top = `${centerY}px`;
+      this.addButtonEl.style.transform = "";
+      this.addButtonEl.style.display = "block";
+      if (this.deleteButtonEl) {
+        const gap = 4;
+        const xDel = isLeft ? xAdd - (buttonSize + gap) : xAdd + (buttonSize + gap);
+        this.deleteButtonEl.style.left = `${xDel}px`;
+        this.deleteButtonEl.style.top = `${centerY}px`;
+        this.deleteButtonEl.style.transform = "";
+        this.deleteButtonEl.style.display = "block";
+      }
+    } catch {
+    }
+  }
+  focusEditorToRange(line, chStart, chEnd) {
+    try {
+      const mdLeaves = this.app.workspace.getLeavesOfType("markdown");
+      for (const leaf of mdLeaves) {
+        const v = leaf.view;
+        if (v?.file?.path === this.file?.path) {
+          const mdView = v;
+          const editor = mdView.editor;
+          const from = { line, ch: chStart };
+          const to = { line, ch: chEnd };
+          setTimeout(() => {
             try {
-              window.cancelAnimationFrame(deps.addButtonRAF);
+              this.app.workspace.setActiveLeaf(leaf, { focus: true });
             } catch {
             }
-            ;
-            deps.setAddButtonRAF(null);
-          }
+            try {
+              this.app.workspace.revealLeaf(leaf);
+            } catch {
+            }
+            try {
+              editor.focus?.();
+            } catch {
+            }
+            try {
+              editor.setSelection(from, to);
+            } catch {
+            }
+            try {
+              editor.scrollIntoView({ from, to }, true);
+            } catch {
+            }
+          }, 0);
+          break;
         }
-      };
-      deps.setAddButtonRAF(window.requestAnimationFrame(tick));
-    }
-    if (node.isroot && deps.deleteButtonEl) {
-      deps.deleteButtonEl.style.display = "none";
-    }
-  } catch {
-  }
-}
-function toolsHideAddButton(deps) {
-  if (deps.addButtonEl) {
-    deps.addButtonEl.style.display = "none";
-    deps.setAddButtonForNodeId(null);
-    if (deps.addButtonRAF != null) {
-      try {
-        window.cancelAnimationFrame(deps.addButtonRAF);
-      } catch {
       }
-      deps.setAddButtonRAF(null);
+    } catch {
     }
   }
-  if (deps.deleteButtonEl) {
-    deps.deleteButtonEl.style.display = "none";
+  async addChildUnder(nodeId) {
+    if (!this.file) return;
+    const content = await this.app.vault.read(this.file);
+    const headings = this.computeHeadingSections(content);
+    const parent = headings.find((h) => h.id === nodeId) ?? null;
+    let levelToInsert = 1;
+    let insertPos = content.length;
+    if (parent) {
+      levelToInsert = Math.min(parent.level + 1, 6);
+      insertPos = Math.min(parent.end + 1, content.length);
+    }
+    const headingPrefix = "#".repeat(levelToInsert);
+    const needLeadingNewline = insertPos > 0 && content.charAt(insertPos - 1) !== "\n";
+    const placeholder = "\u65B0\u6807\u9898";
+    const insertText = `${needLeadingNewline ? "\n" : ""}${headingPrefix} ${placeholder}
+`;
+    const updated = content.slice(0, insertPos) + insertText + content.slice(insertPos);
+    await this.app.vault.modify(this.file, updated);
+    new import_obsidian.Notice("Child heading inserted");
+    const newHeadingStart = insertPos + (needLeadingNewline ? 1 : 0);
+    const before = updated.slice(0, newHeadingStart);
+    const newLineIndex = before.match(/\n/g)?.length ?? 0;
+    const chStart = headingPrefix.length + 1;
+    const chEnd = chStart + placeholder.length;
+    this.focusEditorToRange(newLineIndex, chStart, chEnd);
+    this.show(nodeId);
   }
-}
+};
 
 // themes.ts
 var THEME_OPTIONS = [
@@ -566,33 +766,17 @@ var MindmapView = class extends import_obsidian2.ItemView {
     // only allow jm to center root when explicitly enabled
     this.centerRootWrapped = false;
     // ensure we wrap jsMind center methods only once
-    // UI elements: quick actions (+ / −) and related timers
-    this.addButtonEl = null;
-    // floating + button element
-    this.addButtonForNodeId = null;
-    // which node the buttons are currently attached to
-    this.addButtonRAF = null;
-    // raf token for following node position
+    // UI interaction timing
     this.revealTimeoutId = null;
     // debounce for click-to-reveal in editor
     this.lastDblClickAtMs = 0;
     // last dblclick to differentiate from single click
-    this.deleteButtonEl = null;
-    // floating − button element
     // Visibility/suspension controls (skip heavy work when hidden/offscreen)
     this.isSuspended = false;
     // whether view is currently suspended
     this.pendingDirty = false;
     // if changes occurred while suspended, refresh on resume
-    // Hover popup (node body preview)
-    this.hoverPopupEl = null;
-    // popup element for showing immediate body text
-    this.hoverPopupForNodeId = null;
-    // node id the popup is currently for
-    this.hoverPopupRAF = null;
-    // raf token to follow transforms
-    this.hoverHideTimeoutId = null;
-    // scheduled hide when crossing gap between node and popup
+    // Hover popup handled by controller
     // Stable id mapping (parent chain + sibling index)
     this.idToStableKey = /* @__PURE__ */ new Map();
     // runtime id -> stable key
@@ -600,6 +784,9 @@ var MindmapView = class extends import_obsidian2.ItemView {
     // stable key -> runtime id
     // FSM for sync control
     this.syncState = "scroll";
+    // Controllers (OOP) for UI helpers
+    this.popup = new PopupController();
+    this.buttons = new ButtonController();
     // Scroll sync (follow markdown scrolling)
     this.scrollSyncEl = null;
     // current scroller we listen to
@@ -612,6 +799,17 @@ var MindmapView = class extends import_obsidian2.ItemView {
     // Cached raw file text (for popup extraction and incremental diffs)
     this.lastFileContent = "";
     this.plugin = plugin;
+    this.popup.app = this.app;
+    this.popup.plugin = this.plugin;
+    this.popup.shouldMindmapDriveMarkdown = () => this.shouldMindmapDriveMarkdown();
+    this.popup.isMindmapEditingActive = () => this.isMindmapEditingActive();
+    this.popup.computeHeadingSections = (text) => computeHeadingSections(text);
+    this.buttons.app = this.app;
+    this.buttons.plugin = this.plugin;
+    this.buttons.shouldMindmapDriveMarkdown = () => this.shouldMindmapDriveMarkdown();
+    this.buttons.isMindmapEditingActive = () => this.isMindmapEditingActive();
+    this.buttons.computeHeadingSections = (text) => computeHeadingSections(text);
+    this.buttons.deleteHeadingById = (id) => this.deleteHeadingById(id);
   }
   enterScroll() {
     if (this.syncState === "preview") return;
@@ -707,7 +905,7 @@ var MindmapView = class extends import_obsidian2.ItemView {
           this.jm && this.jm.resize && this.jm.resize();
         } catch {
         }
-        this.updateAddButtonPosition();
+        this.buttons.updatePosition();
       }
     }
   }
@@ -792,6 +990,8 @@ var MindmapView = class extends import_obsidian2.ItemView {
     container.style.minHeight = "400px";
     container.style.position = "relative";
     this.containerElDiv = container;
+    this.popup.containerElDiv = this.containerElDiv;
+    this.buttons.containerElDiv = this.containerElDiv;
     refreshBtn.addEventListener("click", () => this.refresh());
     followBtn.addEventListener("click", () => {
       this.forceEnterScroll();
@@ -808,6 +1008,8 @@ var MindmapView = class extends import_obsidian2.ItemView {
       }
     }
     await this.refresh();
+    this.popup.jm = this.jm;
+    this.buttons.jm = this.jm;
     try {
       const ro = new ResizeObserver(() => {
         if (this.jm) {
@@ -816,7 +1018,7 @@ var MindmapView = class extends import_obsidian2.ItemView {
           } catch {
           }
         }
-        this.updateAddButtonPosition();
+        this.buttons.updatePosition();
       });
       if (this.containerElDiv) ro.observe(this.containerElDiv);
       this.register(() => ro.disconnect());
@@ -885,6 +1087,8 @@ var MindmapView = class extends import_obsidian2.ItemView {
     this.lastSyncedNodeId = null;
     this.forceEnterScroll();
     if (this.containerElDiv) await this.refresh();
+    this.popup.file = this.file;
+    this.buttons.file = this.file;
   }
   async onClose() {
     this.jm = null;
@@ -968,8 +1172,6 @@ var MindmapView = class extends import_obsidian2.ItemView {
       return;
     }
     this.hideAddButton();
-    this.addButtonEl = null;
-    this.deleteButtonEl = null;
     const prevSelectedId = (() => {
       try {
         return this.jm?.get_selected_node?.()?.id ?? null;
@@ -980,7 +1182,9 @@ var MindmapView = class extends import_obsidian2.ItemView {
     this.prevViewport = this.captureViewport();
     const content = await this.app.vault.read(this.file);
     this.lastFileContent = content;
+    this.popup.lastFileContent = this.lastFileContent;
     this.headingsCache = computeHeadingSections(content);
+    this.popup.headingsCache = this.headingsCache;
     this.rebuildStableKeyIndex();
     const mind = buildJsMindTreeFromHeadings(this.headingsCache, this.file.name);
     if (!this.containerElDiv || !window.jsMind) return;
@@ -1097,12 +1301,12 @@ var MindmapView = class extends import_obsidian2.ItemView {
             const nodeId = nodeEl?.getAttribute("nodeid") || "";
             if (!nodeId) return;
             if (this.isMindmapEditingActive()) return;
-            if (this.hoverHideTimeoutId != null) {
+            if (this.popup.hoverHideTimeoutId != null) {
               try {
-                window.clearTimeout(this.hoverHideTimeoutId);
+                window.clearTimeout(this.popup.hoverHideTimeoutId);
               } catch {
               }
-              this.hoverHideTimeoutId = null;
+              this.popup.hoverHideTimeoutId = null;
             }
             this.showHoverPopup(nodeId);
           };
@@ -1112,17 +1316,17 @@ var MindmapView = class extends import_obsidian2.ItemView {
             const nodeEl = t && (t.closest ? t.closest("jmnode") : null);
             if (!nodeEl) return;
             const rel = ev.relatedTarget;
-            if (rel && this.hoverPopupEl && (rel === this.hoverPopupEl || this.hoverPopupEl.contains(rel))) return;
+            if (rel && this.popup.hoverPopupEl && (rel === this.popup.hoverPopupEl || this.popup.hoverPopupEl.contains(rel))) return;
             if (rel && (rel === nodeEl || nodeEl.contains(rel))) return;
-            if (this.hoverHideTimeoutId != null) {
+            if (this.popup.hoverHideTimeoutId != null) {
               try {
-                window.clearTimeout(this.hoverHideTimeoutId);
+                window.clearTimeout(this.popup.hoverHideTimeoutId);
               } catch {
               }
             }
-            this.hoverHideTimeoutId = window.setTimeout(() => {
-              this.hoverHideTimeoutId = null;
-              if (this.hoverPopupEl && this.hoverPopupEl.matches(":hover")) return;
+            this.popup.hoverHideTimeoutId = window.setTimeout(() => {
+              this.popup.hoverHideTimeoutId = null;
+              if (this.popup.hoverPopupEl && this.popup.hoverPopupEl.matches(":hover")) return;
               this.hideHoverPopup();
             }, 180);
           };
@@ -1169,7 +1373,9 @@ var MindmapView = class extends import_obsidian2.ItemView {
     try {
       const content = await this.app.vault.read(this.file);
       this.lastFileContent = content;
+      this.popup.lastFileContent = this.lastFileContent;
       const nextHeadings = computeHeadingSections(content);
+      this.popup.headingsCache = nextHeadings;
       await this.applyHeadingsDiff(this.headingsCache, nextHeadings);
       this.headingsCache = nextHeadings;
     } catch {
@@ -1558,7 +1764,7 @@ var MindmapView = class extends import_obsidian2.ItemView {
       }
     }));
     if (this.containerElDiv) {
-      const scrollHandler = () => this.updateAddButtonPosition();
+      const scrollHandler = () => this.buttons.updatePosition();
       this.containerElDiv.addEventListener("scroll", scrollHandler);
       this.register(() => this.containerElDiv && this.containerElDiv.removeEventListener("scroll", scrollHandler));
     }
@@ -1708,292 +1914,23 @@ var MindmapView = class extends import_obsidian2.ItemView {
     attachScrollSync();
   }
   showAddButton(nodeId) {
-    toolsShowAddButton(nodeId, {
-      containerElDiv: this.containerElDiv,
-      jm: this.jm,
-      app: this.app,
-      plugin: this.plugin,
-      file: this.file,
-      shouldMindmapDriveMarkdown: () => this.shouldMindmapDriveMarkdown(),
-      isMindmapEditingActive: () => this.isMindmapEditingActive(),
-      addButtonEl: this.addButtonEl,
-      deleteButtonEl: this.deleteButtonEl,
-      addButtonForNodeId: this.addButtonForNodeId,
-      setAddButtonEl: (el) => {
-        this.addButtonEl = el;
-      },
-      setDeleteButtonEl: (el) => {
-        this.deleteButtonEl = el;
-      },
-      setAddButtonForNodeId: (id) => {
-        this.addButtonForNodeId = id;
-      },
-      updateAddButtonPosition: () => this.updateAddButtonPosition(),
-      addChildUnder: (id) => this.addChildUnder(id),
-      deleteHeadingById: (id) => this.deleteHeadingById(id),
-      addButtonRAF: this.addButtonRAF,
-      setAddButtonRAF: (id) => {
-        this.addButtonRAF = id;
-      }
-    });
+    this.buttons.show(nodeId);
   }
   hideAddButton() {
-    toolsHideAddButton({
-      containerElDiv: this.containerElDiv,
-      jm: this.jm,
-      app: this.app,
-      plugin: this.plugin,
-      file: this.file,
-      shouldMindmapDriveMarkdown: () => this.shouldMindmapDriveMarkdown(),
-      isMindmapEditingActive: () => this.isMindmapEditingActive(),
-      addButtonEl: this.addButtonEl,
-      deleteButtonEl: this.deleteButtonEl,
-      addButtonForNodeId: this.addButtonForNodeId,
-      setAddButtonEl: (el) => {
-        this.addButtonEl = el;
-      },
-      setDeleteButtonEl: (el) => {
-        this.deleteButtonEl = el;
-      },
-      setAddButtonForNodeId: (id) => {
-        this.addButtonForNodeId = id;
-      },
-      updateAddButtonPosition: () => this.updateAddButtonPosition(),
-      addChildUnder: (id) => this.addChildUnder(id),
-      deleteHeadingById: (id) => this.deleteHeadingById(id),
-      addButtonRAF: this.addButtonRAF,
-      setAddButtonRAF: (id) => {
-        this.addButtonRAF = id;
-      }
-    });
+    this.buttons.hide();
   }
   async addChildUnder(nodeId) {
-    if (!this.file) return;
-    const content = await this.app.vault.read(this.file);
-    const headings = computeHeadingSections(content);
-    const parent = headings.find((h) => h.id === nodeId) ?? null;
-    let levelToInsert = 1;
-    let insertPos = content.length;
-    if (parent) {
-      levelToInsert = Math.min(parent.level + 1, 6);
-      insertPos = Math.min(parent.end + 1, content.length);
-    }
-    const headingPrefix = "#".repeat(levelToInsert);
-    const needLeadingNewline = insertPos > 0 && content.charAt(insertPos - 1) !== "\n";
-    const placeholder = "\u65B0\u6807\u9898";
-    const insertText = `${needLeadingNewline ? "\n" : ""}${headingPrefix} ${placeholder}
-`;
-    const updated = content.slice(0, insertPos) + insertText + content.slice(insertPos);
-    await this.app.vault.modify(this.file, updated);
-    new import_obsidian2.Notice("Child heading inserted");
-    const newHeadingStart = insertPos + (needLeadingNewline ? 1 : 0);
-    const before = updated.slice(0, newHeadingStart);
-    const newLineIndex = before.match(/\n/g)?.length ?? 0;
-    const chStart = headingPrefix.length + 1;
-    const chEnd = chStart + placeholder.length;
-    this.focusEditorToRange(newLineIndex, chStart, chEnd);
-    this.showAddButton(nodeId);
+    await this.buttons.addChildUnder(nodeId);
   }
-  focusEditorToRange(line, chStart, chEnd) {
-    try {
-      const mdLeaves = this.app.workspace.getLeavesOfType("markdown");
-      for (const leaf of mdLeaves) {
-        const v = leaf.view;
-        if (v?.file?.path === this.file?.path) {
-          const mdView = v;
-          const editor = mdView.editor;
-          const from = { line, ch: chStart };
-          const to = { line, ch: chEnd };
-          setTimeout(() => {
-            try {
-              this.app.workspace.setActiveLeaf(leaf, { focus: true });
-            } catch {
-            }
-            try {
-              this.app.workspace.revealLeaf(leaf);
-            } catch {
-            }
-            try {
-              editor.focus?.();
-            } catch {
-            }
-            try {
-              editor.setSelection(from, to);
-            } catch {
-            }
-            try {
-              editor.scrollIntoView({ from, to }, true);
-            } catch {
-            }
-          }, 0);
-          break;
-        }
-      }
-    } catch {
-    }
-  }
-  updateAddButtonPosition() {
-    try {
-      if (!this.addButtonEl || !this.containerElDiv || !this.addButtonForNodeId) return;
-      const nodeEl = this.containerElDiv.querySelector(`jmnode[nodeid="${this.addButtonForNodeId}"]`);
-      if (!nodeEl) return;
-      const node = this.jm?.get_node?.(this.addButtonForNodeId);
-      const expanderEl = this.containerElDiv.querySelector(`jmexpander[nodeid="${this.addButtonForNodeId}"]`);
-      const rect = nodeEl.getBoundingClientRect();
-      const hostRect = this.containerElDiv.getBoundingClientRect();
-      const isLeft = node && node.direction === (window.jsMind?.direction?.left ?? "left");
-      const buttonSize = 22;
-      const gapBase = 8;
-      let xAdd = isLeft ? rect.left - hostRect.left - (buttonSize + gapBase + 6) : rect.right - hostRect.left + gapBase + 6;
-      if (expanderEl) {
-        const expRect = expanderEl.getBoundingClientRect();
-        if (!isLeft) {
-          const minLeft = expRect.right - hostRect.left + gapBase;
-          if (xAdd < minLeft) xAdd = minLeft;
-        } else {
-          const maxLeft = expRect.left - hostRect.left - (buttonSize + gapBase);
-          if (xAdd > maxLeft) xAdd = maxLeft;
-        }
-      }
-      const btnH = this.addButtonEl?.offsetHeight || 22;
-      const centerYRaw = rect.top - hostRect.top + (rect.height - btnH) / 2;
-      const centerY = Math.round(centerYRaw) - 3;
-      this.addButtonEl.style.left = `${xAdd}px`;
-      this.addButtonEl.style.top = `${centerY}px`;
-      this.addButtonEl.style.transform = "";
-      this.addButtonEl.style.display = "block";
-      if (this.deleteButtonEl) {
-        const gap = 4;
-        const xDel = isLeft ? xAdd - (buttonSize + gap) : xAdd + (buttonSize + gap);
-        this.deleteButtonEl.style.left = `${xDel}px`;
-        this.deleteButtonEl.style.top = `${centerY}px`;
-        this.deleteButtonEl.style.transform = "";
-        this.deleteButtonEl.style.display = "block";
-      }
-      this.updateHoverPopupPosition();
-    } catch {
-    }
-  }
-  updateHoverPopupPosition() {
-    try {
-      if (!this.hoverPopupEl || !this.containerElDiv || !this.hoverPopupForNodeId) return;
-      const nodeEl = this.containerElDiv.querySelector(`jmnode[nodeid="${this.hoverPopupForNodeId}"]`);
-      if (!nodeEl) return;
-      const rect = nodeEl.getBoundingClientRect();
-      const hostRect = this.containerElDiv.getBoundingClientRect();
-      const node = this.jm?.get_node?.(this.hoverPopupForNodeId);
-      const isLeft = node && node.direction === (window.jsMind?.direction?.left ?? "left");
-      const gap = 8;
-      const margin = 6;
-      const popupEl = this.hoverPopupEl;
-      if (!popupEl.offsetWidth || !popupEl.offsetHeight || popupEl.style.display === "none") {
-        popupEl.style.visibility = "hidden";
-        popupEl.style.display = "block";
-      }
-      const popupW = popupEl.offsetWidth || 220;
-      const popupH = popupEl.offsetHeight || 180;
-      let x = isLeft ? rect.left - hostRect.left - (popupW + gap) : rect.right - hostRect.left + gap;
-      if (!isLeft && x + popupW > hostRect.width - margin) {
-        x = rect.left - hostRect.left - (popupW + gap);
-      }
-      if (x < margin) x = margin;
-      const nodeLeft = rect.left - hostRect.left;
-      const nodeRight = rect.right - hostRect.left;
-      const popupLeft = x;
-      const popupRight = x + popupW;
-      const overlapsHorizontally = !(popupRight <= nodeLeft - gap || popupLeft >= nodeRight + gap);
-      let y = rect.top - hostRect.top;
-      if (overlapsHorizontally) {
-        const spaceBelow = hostRect.bottom - rect.bottom - margin;
-        const spaceAbove = rect.top - hostRect.top - margin;
-        if (spaceBelow >= popupH + gap || spaceBelow >= spaceAbove) {
-          y = rect.bottom - hostRect.top + gap;
-        } else {
-          y = rect.top - hostRect.top - popupH - gap;
-          if (y < margin) y = margin;
-        }
-      }
-      popupEl.style.left = `${x}px`;
-      popupEl.style.top = `${Math.max(0, y)}px`;
-      popupEl.style.display = "block";
-      popupEl.style.visibility = "visible";
-    } catch {
-    }
-  }
-  extractNodeImmediateBody(nodeId) {
-    try {
-      const content = this.lastFileContent || "";
-      if (!content) return "";
-      const headings = this.headingsCache && this.headingsCache.length ? this.headingsCache : computeHeadingSections(content);
-      const idx = headings.findIndex((h2) => h2.id === nodeId);
-      if (idx === -1) return "";
-      const h = headings[idx];
-      const startBody = Math.min(content.length, Math.max(0, h.headingTextEnd + 1));
-      const next = headings[idx + 1];
-      const endBody = next ? Math.max(startBody, next.start - 1) : Math.max(startBody, content.length);
-      const raw = content.slice(startBody, endBody);
-      return raw.replace(/^\s*\n/, "").trimEnd();
-    } catch {
-      return "";
-    }
-  }
+  // moved into tools
+  // moved into tools
+  // moved into tools
+  // moved into tools
   showHoverPopup(nodeId) {
-    toolsShowHoverPopup(nodeId, {
-      containerElDiv: this.containerElDiv,
-      jm: this.jm,
-      app: this.app,
-      plugin: this.plugin,
-      file: this.file,
-      shouldMindmapDriveMarkdown: () => this.shouldMindmapDriveMarkdown(),
-      isMindmapEditingActive: () => this.isMindmapEditingActive(),
-      hoverPopupEl: this.hoverPopupEl,
-      hoverPopupForNodeId: this.hoverPopupForNodeId,
-      hoverPopupRAF: this.hoverPopupRAF,
-      hoverHideTimeoutId: this.hoverHideTimeoutId,
-      setHoverPopupEl: (el) => {
-        this.hoverPopupEl = el;
-      },
-      setHoverPopupForNodeId: (id) => {
-        this.hoverPopupForNodeId = id;
-      },
-      setHoverPopupRAF: (id) => {
-        this.hoverPopupRAF = id;
-      },
-      setHoverHideTimeoutId: (id) => {
-        this.hoverHideTimeoutId = id;
-      },
-      extractNodeImmediateBody: (id) => this.extractNodeImmediateBody(id),
-      updateHoverPopupPosition: () => this.updateHoverPopupPosition()
-    });
+    this.popup.show(nodeId);
   }
   hideHoverPopup() {
-    toolsHideHoverPopup({
-      containerElDiv: this.containerElDiv,
-      jm: this.jm,
-      app: this.app,
-      plugin: this.plugin,
-      file: this.file,
-      shouldMindmapDriveMarkdown: () => this.shouldMindmapDriveMarkdown(),
-      isMindmapEditingActive: () => this.isMindmapEditingActive(),
-      hoverPopupEl: this.hoverPopupEl,
-      hoverPopupForNodeId: this.hoverPopupForNodeId,
-      hoverPopupRAF: this.hoverPopupRAF,
-      hoverHideTimeoutId: this.hoverHideTimeoutId,
-      setHoverPopupEl: (el) => {
-        this.hoverPopupEl = el;
-      },
-      setHoverPopupForNodeId: (id) => {
-        this.hoverPopupForNodeId = id;
-      },
-      setHoverPopupRAF: (id) => {
-        this.hoverPopupRAF = id;
-      },
-      setHoverHideTimeoutId: (id) => {
-        this.hoverHideTimeoutId = id;
-      },
-      extractNodeImmediateBody: (id) => this.extractNodeImmediateBody(id),
-      updateHoverPopupPosition: () => this.updateHoverPopupPosition()
-    });
+    this.popup.hide();
   }
   async deleteHeadingById(nodeId) {
     if (!this.file) return;
@@ -2148,6 +2085,7 @@ var MindmapPlugin = class extends import_obsidian2.Plugin {
           return;
         }
         const leaf = this.app.workspace.getRightLeaf(false);
+        if (!leaf) return;
         await leaf.setViewState({ type: VIEW_TYPE_MINDMAP, active: true });
         const view = leaf.view;
         await view.setFile(file);

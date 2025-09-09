@@ -1,5 +1,5 @@
 import { App, Editor, ItemView, MarkdownView, Notice, Plugin, PluginSettingTab, Setting, TFile, WorkspaceLeaf, requestUrl, MarkdownRenderer } from 'obsidian';
-import { toolsShowHoverPopup, toolsHideHoverPopup, toolsShowAddButton, toolsHideAddButton } from './tools';
+import { PopupController, ButtonController } from './tools';
 import { ensureThemeCssInjected, getJsMindThemeNameFromSetting, THEME_OPTIONS, ThemeName } from './themes';
 
 declare global {
@@ -195,23 +195,15 @@ class MindmapView extends ItemView {
   private allowCenterRoot: boolean = false;           // only allow jm to center root when explicitly enabled
   private centerRootWrapped: boolean = false;         // ensure we wrap jsMind center methods only once
 
-  // UI elements: quick actions (+ / −) and related timers
-  private addButtonEl: HTMLButtonElement | null = null; // floating + button element
-  private addButtonForNodeId: string | null = null;   // which node the buttons are currently attached to
-  private addButtonRAF: number | null = null;         // raf token for following node position
+  // UI interaction timing
   private revealTimeoutId: number | null = null;      // debounce for click-to-reveal in editor
   private lastDblClickAtMs: number = 0;               // last dblclick to differentiate from single click
-  private deleteButtonEl: HTMLButtonElement | null = null; // floating − button element
 
   // Visibility/suspension controls (skip heavy work when hidden/offscreen)
   private isSuspended: boolean = false;               // whether view is currently suspended
   private pendingDirty: boolean = false;              // if changes occurred while suspended, refresh on resume
 
-  // Hover popup (node body preview)
-  private hoverPopupEl: HTMLDivElement | null = null; // popup element for showing immediate body text
-  private hoverPopupForNodeId: string | null = null;  // node id the popup is currently for
-  private hoverPopupRAF: number | null = null;        // raf token to follow transforms
-  private hoverHideTimeoutId: number | null = null;   // scheduled hide when crossing gap between node and popup
+  // Hover popup handled by controller
 
   // Stable id mapping (parent chain + sibling index)
   private idToStableKey: Map<string, string> = new Map(); // runtime id -> stable key
@@ -219,6 +211,9 @@ class MindmapView extends ItemView {
 
   // FSM for sync control
   private syncState: 'scroll' | 'edit' | 'preview' = 'scroll';
+  // Controllers (OOP) for UI helpers
+  private popup: PopupController = new PopupController();
+  private buttons: ButtonController = new ButtonController();
   private enterScroll() { 
     if (this.syncState === 'preview') return;
     if (this.syncState === 'edit') return;
@@ -300,7 +295,7 @@ class MindmapView extends ItemView {
         this.refresh().catch(() => {});
       } else {
         try { this.jm && this.jm.resize && this.jm.resize(); } catch {}
-        this.updateAddButtonPosition();
+        this.buttons.updatePosition();
       }
     }
   }
@@ -308,6 +303,18 @@ class MindmapView extends ItemView {
   constructor(leaf: WorkspaceLeaf, plugin: MindmapPlugin) {
     super(leaf);
     this.plugin = plugin;
+    // initialize controllers with stable deps where available
+    this.popup.app = this.app;
+    this.popup.plugin = this.plugin;
+    this.popup.shouldMindmapDriveMarkdown = () => this.shouldMindmapDriveMarkdown();
+    this.popup.isMindmapEditingActive = () => this.isMindmapEditingActive();
+    this.popup.computeHeadingSections = (text: string) => computeHeadingSections(text);
+    this.buttons.app = this.app;
+    this.buttons.plugin = this.plugin;
+    this.buttons.shouldMindmapDriveMarkdown = () => this.shouldMindmapDriveMarkdown();
+    this.buttons.isMindmapEditingActive = () => this.isMindmapEditingActive();
+    this.buttons.computeHeadingSections = (text: string) => computeHeadingSections(text);
+    this.buttons.deleteHeadingById = (id: string) => this.deleteHeadingById(id);
   }
 
   getViewType(): string {
@@ -396,6 +403,9 @@ class MindmapView extends ItemView {
     container.style.minHeight = '400px';
     container.style.position = 'relative';
     this.containerElDiv = container;
+    // wire DOM into controllers
+    this.popup.containerElDiv = this.containerElDiv;
+    this.buttons.containerElDiv = this.containerElDiv;
     refreshBtn.addEventListener('click', () => this.refresh());
     followBtn.addEventListener('click', () => {
       // Follow is now purely based on active view + setting; nothing to toggle here
@@ -416,6 +426,9 @@ class MindmapView extends ItemView {
     }
     // No driver arbitration: single-direction via active view only
     await this.refresh();
+    // after refresh, jm exists; propagate instance
+    this.popup.jm = this.jm;
+    this.buttons.jm = this.jm;
 
     // Observe size changes for reliable canvas resizing
     try {
@@ -423,7 +436,7 @@ class MindmapView extends ItemView {
         if (this.jm) {
           try { this.jm.resize && this.jm.resize(); } catch {}
         }
-        this.updateAddButtonPosition();
+        this.buttons.updatePosition();
       });
       if (this.containerElDiv) ro.observe(this.containerElDiv);
       this.register(() => ro.disconnect());
@@ -499,6 +512,9 @@ class MindmapView extends ItemView {
     this.forceEnterScroll();
     // No driver reset needed
     if (this.containerElDiv) await this.refresh();
+    // propagate dynamic file into controllers
+    this.popup.file = this.file;
+    this.buttons.file = this.file;
   }
 
   async onClose() {
@@ -591,8 +607,6 @@ class MindmapView extends ItemView {
     }
     // Stop and clear floating buttons before rebuilding DOM
     this.hideAddButton();
-    this.addButtonEl = null;
-    this.deleteButtonEl = null;
     // Capture viewport (transform) and selection before rebuild
     const prevSelectedId = (() => {
       try { return this.jm?.get_selected_node?.()?.id ?? null; } catch { return null; }
@@ -601,7 +615,10 @@ class MindmapView extends ItemView {
 
     const content = await this.app.vault.read(this.file);
     this.lastFileContent = content;
+    // keep controllers updated with latest content & headings
+    this.popup.lastFileContent = this.lastFileContent;
     this.headingsCache = computeHeadingSections(content);
+    this.popup.headingsCache = this.headingsCache;
     this.rebuildStableKeyIndex();
     const mind = buildJsMindTreeFromHeadings(this.headingsCache, this.file.name);
     if (!this.containerElDiv || !window.jsMind) return;
@@ -713,7 +730,10 @@ class MindmapView extends ItemView {
             if (!nodeId) return;
             if (this.isMindmapEditingActive()) return;
             // Cancel pending hide when entering another node quickly
-            if (this.hoverHideTimeoutId != null) { try { window.clearTimeout(this.hoverHideTimeoutId); } catch {} this.hoverHideTimeoutId = null; }
+            if (this.popup.hoverHideTimeoutId != null) {
+              try { window.clearTimeout(this.popup.hoverHideTimeoutId); } catch {}
+              this.popup.hoverHideTimeoutId = null;
+            }
             this.showHoverPopup(nodeId);
           };
           const outHandler = (ev: MouseEvent) => {
@@ -723,14 +743,14 @@ class MindmapView extends ItemView {
             if (!nodeEl) return;
             const rel = ev.relatedTarget as HTMLElement | null;
             // If moving into the popup, do not hide
-            if (rel && this.hoverPopupEl && (rel === this.hoverPopupEl || this.hoverPopupEl.contains(rel))) return;
+            if (rel && this.popup.hoverPopupEl && (rel === this.popup.hoverPopupEl || this.popup.hoverPopupEl.contains(rel))) return;
             if (rel && (rel === nodeEl || nodeEl.contains(rel))) return;
             // Gap tolerance: delay hide to allow cursor to cross gap into popup or next node
-            if (this.hoverHideTimeoutId != null) { try { window.clearTimeout(this.hoverHideTimeoutId); } catch {} }
-            this.hoverHideTimeoutId = window.setTimeout(() => {
-              this.hoverHideTimeoutId = null;
+            if (this.popup.hoverHideTimeoutId != null) { try { window.clearTimeout(this.popup.hoverHideTimeoutId); } catch {} }
+            this.popup.hoverHideTimeoutId = window.setTimeout(() => {
+              this.popup.hoverHideTimeoutId = null;
               // If mouse is now over popup, keep it
-              if (this.hoverPopupEl && this.hoverPopupEl.matches(':hover')) return;
+              if (this.popup.hoverPopupEl && this.popup.hoverPopupEl.matches(':hover')) return;
               this.hideHoverPopup();
             }, 180);
           };
@@ -741,7 +761,7 @@ class MindmapView extends ItemView {
             const isNode = !!(t && (t.closest ? t.closest('jmnode') : null));
             if (!isNode) this.forceEnterScroll();
           };
-          nodesContainer.addEventListener('mousedown', blankHandler, true);
+          nodesContainer.addEventListener('mousedown', blankHandler as any, true);
           if ((this.plugin as any).settings?.enablePopup) {
             nodesContainer.addEventListener('mouseover', overHandler as any);
             nodesContainer.addEventListener('mouseout', outHandler as any);
@@ -755,12 +775,12 @@ class MindmapView extends ItemView {
             // Allow jsMind to enter edit mode without stealing focus to editor
           };
           nodesContainer.addEventListener('dblclick', dblHandler);
-          this.register(() => nodesContainer && nodesContainer.removeEventListener('click', handler));
+          this.register(() => nodesContainer && nodesContainer.removeEventListener('click', handler as any));
           if ((this.plugin as any).settings?.enablePopup) {
             this.register(() => nodesContainer && nodesContainer.removeEventListener('mouseover', overHandler as any));
             this.register(() => nodesContainer && nodesContainer.removeEventListener('mouseout', outHandler as any));
           }
-          this.register(() => nodesContainer && nodesContainer.removeEventListener('dblclick', dblHandler));
+          this.register(() => nodesContainer && nodesContainer.removeEventListener('dblclick', dblHandler as any));
         }
       };
       attachSelectionSync();
@@ -779,7 +799,9 @@ class MindmapView extends ItemView {
     try {
       const content = await this.app.vault.read(this.file);
       this.lastFileContent = content;
+      this.popup.lastFileContent = this.lastFileContent;
       const nextHeadings = computeHeadingSections(content);
+      this.popup.headingsCache = nextHeadings;
       await this.applyHeadingsDiff(this.headingsCache, nextHeadings);
       this.headingsCache = nextHeadings;
     } catch {
@@ -954,7 +976,7 @@ class MindmapView extends ItemView {
         const chain: number[] = [];
         let cur: HeadingNode | null = h;
         while (cur) {
-          const parent = cur.parentId ? byId.get(cur.parentId) ?? null : null;
+          const parent: HeadingNode | null = cur.parentId ? (byId.get(cur.parentId) as HeadingNode | undefined) ?? null : null;
           const siblings = childrenByParent.get(cur.parentId ?? null) ?? [];
           const idx = Math.max(0, siblings.findIndex(x => x.id === cur!.id));
           chain.push(idx);
@@ -1123,7 +1145,7 @@ class MindmapView extends ItemView {
     };
 
     // Editor content change -> sync
-    this.registerEvent(this.app.workspace.on('editor-change', (editor: Editor, mdView?: MarkdownView) => {
+    this.registerEvent((this.app.workspace as any).on('editor-change', (editor: Editor, mdView?: MarkdownView) => {
       if (!this.file) return;
       // Only run when this file's markdown is the active view
       if (!this.isActiveMarkdownForThisFile()) return;
@@ -1134,9 +1156,9 @@ class MindmapView extends ItemView {
 
     // Reposition + button on container scroll (when scrollbars visible)
     if (this.containerElDiv) {
-      const scrollHandler = () => this.updateAddButtonPosition();
+      const scrollHandler = () => this.buttons.updatePosition();
       this.containerElDiv.addEventListener('scroll', scrollHandler);
-      this.register(() => this.containerElDiv && this.containerElDiv.removeEventListener('scroll', scrollHandler));
+      this.register(() => this.containerElDiv && this.containerElDiv.removeEventListener('scroll', scrollHandler as any));
     }
 
     // Removed cursor-only polling to rely on scroll and explicit interactions
@@ -1165,8 +1187,8 @@ class MindmapView extends ItemView {
             const run = () => { try { /* sync mindmap to current cursor */ (trySync as any)(); } catch {} };
             if (typeof window.requestAnimationFrame === 'function') window.requestAnimationFrame(run); else setTimeout(run, 0);
           };
-          cmRoot.addEventListener('mousedown', onEditMouseDown, true);
-          cmRoot.addEventListener('mouseup', onEditMouseUp, true);
+          cmRoot.addEventListener('mousedown', onEditMouseDown as any, true);
+          cmRoot.addEventListener('mouseup', onEditMouseUp as any, true);
           this.register(() => {
             try { cmRoot.removeEventListener('mousedown', onEditMouseDown, true); } catch {}
             try { cmRoot.removeEventListener('mouseup', onEditMouseUp, true); } catch {}
@@ -1260,264 +1282,37 @@ class MindmapView extends ItemView {
       scroller.addEventListener('scroll', onScroll);
       this.scrollSyncEl = scroller as HTMLElement;
       this.scrollSyncHandler = onScroll;
-      this.register(() => scroller && scroller.removeEventListener('scroll', onScroll));
+      this.register(() => scroller && scroller.removeEventListener('scroll', onScroll as any));
     };
     attachScrollSync();
   }
 
   private showAddButton(nodeId: string) {
-    toolsShowAddButton(nodeId, {
-      containerElDiv: this.containerElDiv,
-      jm: this.jm,
-      app: this.app,
-      plugin: this.plugin,
-      file: this.file,
-      shouldMindmapDriveMarkdown: () => this.shouldMindmapDriveMarkdown(),
-      isMindmapEditingActive: () => this.isMindmapEditingActive(),
-      addButtonEl: this.addButtonEl,
-      deleteButtonEl: this.deleteButtonEl,
-      addButtonForNodeId: this.addButtonForNodeId,
-      setAddButtonEl: (el) => { this.addButtonEl = el;},
-      setDeleteButtonEl: (el) => { this.deleteButtonEl = el; },
-      setAddButtonForNodeId: (id) => { this.addButtonForNodeId = id; },
-      updateAddButtonPosition: () => this.updateAddButtonPosition(),
-      addChildUnder: (id) => this.addChildUnder(id),
-      deleteHeadingById: (id) => this.deleteHeadingById(id),
-      addButtonRAF: this.addButtonRAF,
-      setAddButtonRAF: (id) => { this.addButtonRAF = id; },
-    });
+    this.buttons.show(nodeId);
   }
 
   private hideAddButton() {
-    toolsHideAddButton({
-      containerElDiv: this.containerElDiv,
-      jm: this.jm,
-      app: this.app,
-      plugin: this.plugin,
-      file: this.file,
-      shouldMindmapDriveMarkdown: () => this.shouldMindmapDriveMarkdown(),
-      isMindmapEditingActive: () => this.isMindmapEditingActive(),
-      addButtonEl: this.addButtonEl,
-      deleteButtonEl: this.deleteButtonEl,
-      addButtonForNodeId: this.addButtonForNodeId,
-      setAddButtonEl: (el) => { this.addButtonEl = el; },
-      setDeleteButtonEl: (el) => { this.deleteButtonEl = el; },
-      setAddButtonForNodeId: (id) => { this.addButtonForNodeId = id; },
-      updateAddButtonPosition: () => this.updateAddButtonPosition(),
-      addChildUnder: (id) => this.addChildUnder(id),
-      deleteHeadingById: (id) => this.deleteHeadingById(id),
-      addButtonRAF: this.addButtonRAF,
-      setAddButtonRAF: (id) => { this.addButtonRAF = id; },
-    });
+    this.buttons.hide();
   }
 
   private async addChildUnder(nodeId: string) {
-    if (!this.file) return;
-    const content = await this.app.vault.read(this.file);
-    const headings = computeHeadingSections(content);
-    const parent = headings.find(h => h.id === nodeId) ?? null;
-    let levelToInsert = 1;
-    let insertPos = content.length;
-    if (parent) {
-      levelToInsert = Math.min(parent.level + 1, 6);
-      // Always append at the end of the parent's section (after its entire content block)
-      insertPos = Math.min(parent.end + 1, content.length);
-    }
-    const headingPrefix = '#'.repeat(levelToInsert);
-    const needLeadingNewline = insertPos > 0 && content.charAt(insertPos - 1) !== '\n';
-    // Use placeholder title to satisfy jsMind's non-empty topic requirement
-    const placeholder = '新标题';
-    const insertText = `${needLeadingNewline ? '\n' : ''}${headingPrefix} ${placeholder}\n`;
-    const updated = content.slice(0, insertPos) + insertText + content.slice(insertPos);
-    await this.app.vault.modify(this.file, updated);
-    new Notice('Child heading inserted');
-    // Immediately focus editor to the inserted placeholder title
-    const newHeadingStart = insertPos + (needLeadingNewline ? 1 : 0);
-    const before = updated.slice(0, newHeadingStart);
-    const newLineIndex = (before.match(/\n/g)?.length ?? 0);
-    const chStart = headingPrefix.length + 1;
-    const chEnd = chStart + placeholder.length;
-    this.focusEditorToRange(newLineIndex, chStart, chEnd);
-    // re-show buttons for current node after document mutation
-    this.showAddButton(nodeId);
+    await this.buttons.addChildUnder(nodeId);
   }
 
-  private focusEditorToRange(line: number, chStart: number, chEnd: number) {
-    try {
-      const mdLeaves = this.app.workspace.getLeavesOfType('markdown');
-      for (const leaf of mdLeaves) {
-        const v = leaf.view as any;
-        if (v?.file?.path === this.file?.path) {
-          const mdView = v as MarkdownView;
-          const editor = mdView.editor;
-          const from = { line, ch: chStart } as any;
-          const to = { line, ch: chEnd } as any;
-          setTimeout(() => {
-            try { this.app.workspace.setActiveLeaf(leaf, { focus: true }); } catch {}
-            try { this.app.workspace.revealLeaf(leaf); } catch {}
-            try { (editor as any).focus?.(); } catch {}
-            try { editor.setSelection(from, to); } catch {}
-            try { (editor as any).scrollIntoView({ from, to }, true); } catch {}
-          }, 0);
-          break;
-        }
-      }
-    } catch {}
-  }
+  // moved into tools
 
-  private updateAddButtonPosition() {
-    try {
-      if (!this.addButtonEl || !this.containerElDiv || !this.addButtonForNodeId) return;
-      const nodeEl = this.containerElDiv.querySelector(`jmnode[nodeid="${this.addButtonForNodeId}"]`) as HTMLElement | null;
-      if (!nodeEl) return;
-      const node = this.jm?.get_node?.(this.addButtonForNodeId);
-      const expanderEl = this.containerElDiv.querySelector(`jmexpander[nodeid="${this.addButtonForNodeId}"]`) as HTMLElement | null;
-      const rect = nodeEl.getBoundingClientRect();
-      const hostRect = this.containerElDiv.getBoundingClientRect();
-      const isLeft = node && (node.direction === (window.jsMind?.direction?.left ?? 'left'));
-      const buttonSize = 22;
-      const gapBase = 8; // base gap from node/expander
-      let xAdd = isLeft ? rect.left - hostRect.left - (buttonSize + gapBase + 6) : rect.right - hostRect.left + gapBase + 6;
-      // If expander exists, place button beyond it to avoid overlap
-      if (expanderEl) {
-        const expRect = expanderEl.getBoundingClientRect();
-        if (!isLeft) {
-          const minLeft = expRect.right - hostRect.left + gapBase;
-          if (xAdd < minLeft) xAdd = minLeft;
-        } else {
-          const maxLeft = expRect.left - hostRect.left - (buttonSize + gapBase);
-          if (xAdd > maxLeft) xAdd = maxLeft;
-        }
-      }
-      const btnH = (this.addButtonEl?.offsetHeight || 22);
-      const centerYRaw = rect.top - hostRect.top + (rect.height - btnH) / 2;
-      const centerY = Math.round(centerYRaw) - 3; // nudge up 1px for visual centering
-      this.addButtonEl.style.left = `${xAdd}px`;
-      this.addButtonEl.style.top = `${centerY}px`;
-      this.addButtonEl.style.transform = '';
-      this.addButtonEl.style.display = 'block';
-      if (this.deleteButtonEl) {
-        const gap = 4;
-        const xDel = isLeft ? xAdd - (buttonSize + gap) : xAdd + (buttonSize + gap);
-        this.deleteButtonEl.style.left = `${xDel}px`;
-        this.deleteButtonEl.style.top = `${centerY}px`;
-        this.deleteButtonEl.style.transform = '';
-        this.deleteButtonEl.style.display = 'block';
-      }
-      this.updateHoverPopupPosition();
-    } catch {}
-  }
+  // moved into tools
 
-  private updateHoverPopupPosition() {
-    try {
-      if (!this.hoverPopupEl || !this.containerElDiv || !this.hoverPopupForNodeId) return;
-      const nodeEl = this.containerElDiv.querySelector(`jmnode[nodeid="${this.hoverPopupForNodeId}"]`) as HTMLElement | null;
-      if (!nodeEl) return;
-      const rect = nodeEl.getBoundingClientRect();
-      const hostRect = this.containerElDiv.getBoundingClientRect();
-      const node = this.jm?.get_node?.(this.hoverPopupForNodeId);
-      const isLeft = node && (node.direction === (window.jsMind?.direction?.left ?? 'left'));
-      const gap = 8;
-      const margin = 6;
-      const popupEl = this.hoverPopupEl as HTMLDivElement;
-      // Measure popup size safely (ensure measurable)
-      if (!popupEl.offsetWidth || !popupEl.offsetHeight || popupEl.style.display === 'none') {
-        popupEl.style.visibility = 'hidden';
-        popupEl.style.display = 'block';
-      }
-      const popupW = popupEl.offsetWidth || 220;
-      const popupH = popupEl.offsetHeight || 180;
-      // Horizontal placement (left/right of node), with overflow handling
-      let x = isLeft ? (rect.left - hostRect.left) - (popupW + gap) : (rect.right - hostRect.left) + gap;
-      if (!isLeft && (x + popupW > hostRect.width - margin)) {
-        x = (rect.left - hostRect.left) - (popupW + gap);
-      }
-      if (x < margin) x = margin;
-      // Check if popup would horizontally overlap the node (squeezed)
-      const nodeLeft = rect.left - hostRect.left;
-      const nodeRight = rect.right - hostRect.left;
-      const popupLeft = x;
-      const popupRight = x + popupW;
-      const overlapsHorizontally = !(popupRight <= nodeLeft - gap || popupLeft >= nodeRight + gap);
-      // Default vertical alignment: align with node top
-      let y: number = rect.top - hostRect.top;
-      // If horizontally overlapping (squeezed), reposition vertically to avoid covering the node
-      if (overlapsHorizontally) {
-        const spaceBelow = hostRect.bottom - rect.bottom - margin;
-        const spaceAbove = rect.top - hostRect.top - margin;
-        if (spaceBelow >= popupH + gap || spaceBelow >= spaceAbove) {
-          y = rect.bottom - hostRect.top + gap; // place below node
-        } else {
-          y = rect.top - hostRect.top - popupH - gap; // place above node
-          if (y < margin) y = margin;
-        }
-      }
-      popupEl.style.left = `${x}px`;
-      popupEl.style.top = `${Math.max(0, y)}px`;
-      popupEl.style.display = 'block';
-      popupEl.style.visibility = 'visible';
-    } catch {}
-  }
+  // moved into tools
 
-  private extractNodeImmediateBody(nodeId: string): string {
-    try {
-      const content = this.lastFileContent || '';
-      if (!content) return '';
-      const headings = this.headingsCache && this.headingsCache.length ? this.headingsCache : computeHeadingSections(content);
-      const idx = headings.findIndex(h => h.id === nodeId);
-      if (idx === -1) return '';
-      const h = headings[idx];
-      const startBody = Math.min(content.length, Math.max(0, h.headingTextEnd + 1));
-      const next = headings[idx + 1];
-      const endBody = next ? Math.max(startBody, next.start - 1) : Math.max(startBody, content.length);
-      const raw = content.slice(startBody, endBody);
-      // Trim leading blank lines and trailing spaces
-      return raw.replace(/^\s*\n/, '').trimEnd();
-    } catch { return ''; }
-  }
+  // moved into tools
 
   private showHoverPopup(nodeId: string) {
-    toolsShowHoverPopup(nodeId, {
-      containerElDiv: this.containerElDiv,
-      jm: this.jm,
-      app: this.app,
-      plugin: this.plugin,
-      file: this.file,
-      shouldMindmapDriveMarkdown: () => this.shouldMindmapDriveMarkdown(),
-      isMindmapEditingActive: () => this.isMindmapEditingActive(),
-      hoverPopupEl: this.hoverPopupEl,
-      hoverPopupForNodeId: this.hoverPopupForNodeId,
-      hoverPopupRAF: this.hoverPopupRAF,
-      hoverHideTimeoutId: this.hoverHideTimeoutId,
-      setHoverPopupEl: (el) => { this.hoverPopupEl = el; },
-      setHoverPopupForNodeId: (id) => { this.hoverPopupForNodeId = id; },
-      setHoverPopupRAF: (id) => { this.hoverPopupRAF = id; },
-      setHoverHideTimeoutId: (id) => { this.hoverHideTimeoutId = id; },
-      extractNodeImmediateBody: (id) => this.extractNodeImmediateBody(id),
-      updateHoverPopupPosition: () => this.updateHoverPopupPosition(),
-    });
+    this.popup.show(nodeId);
   }
 
   private hideHoverPopup() {
-    toolsHideHoverPopup({
-      containerElDiv: this.containerElDiv,
-      jm: this.jm,
-      app: this.app,
-      plugin: this.plugin,
-      file: this.file,
-      shouldMindmapDriveMarkdown: () => this.shouldMindmapDriveMarkdown(),
-      isMindmapEditingActive: () => this.isMindmapEditingActive(),
-      hoverPopupEl: this.hoverPopupEl,
-      hoverPopupForNodeId: this.hoverPopupForNodeId,
-      hoverPopupRAF: this.hoverPopupRAF,
-      hoverHideTimeoutId: this.hoverHideTimeoutId,
-      setHoverPopupEl: (el) => { this.hoverPopupEl = el; },
-      setHoverPopupForNodeId: (id) => { this.hoverPopupForNodeId = id; },
-      setHoverPopupRAF: (id) => { this.hoverPopupRAF = id; },
-      setHoverHideTimeoutId: (id) => { this.hoverHideTimeoutId = id; },
-      extractNodeImmediateBody: (id) => this.extractNodeImmediateBody(id),
-      updateHoverPopupPosition: () => this.updateHoverPopupPosition(),
-    });
+    this.popup.hide();
   }
 
   private async deleteHeadingById(nodeId: string) {
@@ -1622,6 +1417,8 @@ class MindmapView extends ItemView {
     return false;
   }
 
+  
+
 
 }
 
@@ -1685,6 +1482,7 @@ export default class MindmapPlugin extends Plugin {
           return;
         }
         const leaf = this.app.workspace.getRightLeaf(false);
+        if (!leaf) return;
         await leaf.setViewState({ type: VIEW_TYPE_MINDMAP, active: true });
         const view = leaf.view as MindmapView;
         await view.setFile(file);

@@ -1,253 +1,382 @@
 import { MarkdownRenderer, MarkdownView, Notice, TFile } from 'obsidian';
 
-export type CommonDeps = {
-  containerElDiv: HTMLDivElement | null;
-  jm: any | null;
+export class PopupController {
+  containerElDiv: HTMLDivElement | null = null;
+  jm: any | null = null;
   app: any;
   plugin: any;
-  file: TFile | null;
-  // State getters
-  shouldMindmapDriveMarkdown: () => boolean;
-  isMindmapEditingActive: () => boolean;
-};
+  file: TFile | null = null;
+  shouldMindmapDriveMarkdown: () => boolean = () => false;
+  isMindmapEditingActive: () => boolean = () => false;
+  hoverPopupEl: HTMLDivElement | null = null;
+  hoverPopupForNodeId: string | null = null;
+  hoverPopupRAF: number | null = null;
+  hoverHideTimeoutId: number | null = null;
+  lastFileContent: string = '';
+  headingsCache?: any[];
+  computeHeadingSections: (text: string) => any[] = () => [];
 
-export type PopupState = CommonDeps & {
-  // popup state
-  hoverPopupEl: HTMLDivElement | null;
-  hoverPopupForNodeId: string | null;
-  hoverPopupRAF: number | null;
-  hoverHideTimeoutId: number | null;
-  // setters
-  setHoverPopupEl: (el: HTMLDivElement | null) => void;
-  setHoverPopupForNodeId: (id: string | null) => void;
-  setHoverPopupRAF: (id: number | null) => void;
-  setHoverHideTimeoutId: (id: number | null) => void;
-  // helpers from main
-  extractNodeImmediateBody: (nodeId: string) => string;
-  updateHoverPopupPosition: () => void;
-};
-
-export function toolsShowHoverPopup(nodeId: string, deps: PopupState) {
-  try {
-    if (!(deps.plugin as any).settings?.enablePopup) { toolsHideHoverPopup(deps); return; }
-    if (!deps.containerElDiv) return;
-    if (deps.isMindmapEditingActive()) return;
-    const body = deps.extractNodeImmediateBody(nodeId);
-    if (!body || body.trim().length === 0) { toolsHideHoverPopup(deps); return; }
-    let el = deps.hoverPopupEl;
-    if (!el) {
-      el = document.createElement('div');
-      try { el.classList.add('mm-popup'); } catch {}
-      el.style.position = 'absolute';
-      el.style.zIndex = '6';
-      el.style.minWidth = '220px';
-      el.style.maxWidth = '420px';
-      el.style.maxHeight = '240px';
-      el.style.overflow = 'auto';
-      el.style.padding = '4px 6px';
-      el.style.borderRadius = '6px';
-      el.style.boxShadow = '0 8px 24px rgba(0,0,0,0.25)';
-      // Theme-aware frosted glass styles (initial)
-      {
-        const isDark = document.body.classList.contains('theme-dark');
-        el.style.setProperty('border', isDark ? '1px solid rgba(255,255,255,0.18)' : '1px solid rgba(0,0,0,0.12)', 'important');
-        el.style.setProperty('background', isDark ? 'rgba(30,30,30,0.68)' : 'rgba(255,255,255,0.85)', 'important');
+  show(nodeId: string) {
+    try {
+      if (!(this.plugin as any)?.settings?.enablePopup) { this.hide(); return; }
+      if (!this.containerElDiv) return;
+      if (this.isMindmapEditingActive()) return;
+      const body = this.extractNodeImmediateBody(nodeId);
+      if (!body || body.trim().length === 0) { this.hide(); return; }
+      let el = this.hoverPopupEl;
+      if (!el) {
+        el = document.createElement('div');
+        try { el.classList.add('mm-popup'); } catch {}
+        el.style.position = 'absolute';
+        el.style.zIndex = '6';
+        el.style.minWidth = '220px';
+        el.style.maxWidth = '420px';
+        el.style.maxHeight = '240px';
+        el.style.overflow = 'auto';
+        el.style.padding = '4px 6px';
+        el.style.borderRadius = '6px';
+        el.style.boxShadow = '0 8px 24px rgba(0,0,0,0.25)';
+        {
+          const isDark = document.body.classList.contains('theme-dark');
+          el.style.setProperty('border', isDark ? '1px solid rgba(255,255,255,0.18)' : '1px solid rgba(0,0,0,0.12)', 'important');
+          el.style.setProperty('background', isDark ? 'rgba(30,30,30,0.68)' : 'rgba(255,255,255,0.85)', 'important');
+        }
+        (el.style as any).backdropFilter = 'blur(15px)';
+        (el.style as any).webkitBackdropFilter = 'blur(15px)';
+        el.style.backgroundClip = 'padding-box';
+        el.style.color = 'var(--text-normal)';
+        el.style.whiteSpace = 'pre-wrap';
+        el.style.pointerEvents = 'auto';
+        ;(el.style as any).userSelect = 'text';
+        ;(el.style as any).webkitUserSelect = 'text';
+        try {
+          const stop = (ev: Event) => ev.stopPropagation();
+          el.addEventListener('mousedown', stop);
+          el.addEventListener('mouseup', stop);
+          el.addEventListener('click', stop);
+          el.addEventListener('dblclick', stop);
+        } catch {}
+        this.containerElDiv!.appendChild(el);
+        this.hoverPopupEl = el;
       }
-      (el.style as any).backdropFilter = 'blur(15px)';
-      (el.style as any).webkitBackdropFilter = 'blur(15px)';
-      el.style.backgroundClip = 'padding-box';
-      el.style.color = 'var(--text-normal)';
-      el.style.whiteSpace = 'pre-wrap';
-      // Enable interactions so users can hover/scroll inside popup
-      el.style.pointerEvents = 'auto';
-      // Allow text selection even if parent has user-select: none
-      ;(el.style as any).userSelect = 'text';
-      ;(el.style as any).webkitUserSelect = 'text';
       try {
-        // Prevent jsMind from hijacking mouse events while still allowing selection
-        const stop = (ev: Event) => ev.stopPropagation();
-        el.addEventListener('mousedown', stop);
-        el.addEventListener('mouseup', stop);
-        el.addEventListener('click', stop);
-        el.addEventListener('dblclick', stop);
+        const isDarkNow = document.body.classList.contains('theme-dark');
+        this.hoverPopupEl!.style.setProperty('border', isDarkNow ? '1px solid rgba(255,255,255,0.18)' : '1px solid rgba(0,0,0,0.12)', 'important');
+        this.hoverPopupEl!.style.setProperty('background', isDarkNow ? 'rgba(30,30,30,0.68)' : 'rgba(255,255,255,0.85)', 'important');
       } catch {}
-      deps.containerElDiv.appendChild(el);
-      deps.setHoverPopupEl(el);
-    }
-    // Re-apply theme-aware background/border each time we show (handles theme switch)
-    try {
-      const isDarkNow = document.body.classList.contains('theme-dark');
-      deps.hoverPopupEl!.style.setProperty('border', isDarkNow ? '1px solid rgba(255,255,255,0.18)' : '1px solid rgba(0,0,0,0.12)', 'important');
-      deps.hoverPopupEl!.style.setProperty('background', isDarkNow ? 'rgba(30,30,30,0.68)' : 'rgba(255,255,255,0.85)', 'important');
-    } catch {}
-    // Keep popup visible when mouse enters the popup area; hide on leave only if not entering a node
-    try {
-      const popup = deps.hoverPopupEl!;
-      if (!(popup as any).__mm_popup_bound) {
-        popup.addEventListener('mouseleave', (ev: MouseEvent) => {
-          const rel = ev.relatedTarget as HTMLElement | null;
-          const intoNode = rel && (rel.closest ? rel.closest('jmnode') : null);
-          if (intoNode) return;
-          // Delay slightly to tolerate small gaps leaving popup into another node
-          if (deps.hoverHideTimeoutId != null) { try { window.clearTimeout(deps.hoverHideTimeoutId); } catch {} }
-          deps.setHoverHideTimeoutId(window.setTimeout(() => {
-            deps.setHoverHideTimeoutId(null);
-            toolsHideHoverPopup(deps);
-          }, 150));
-        });
-        (popup as any).__mm_popup_bound = true;
+      try {
+        const popup = this.hoverPopupEl!;
+        if (!(popup as any).__mm_popup_bound) {
+          popup.addEventListener('mouseleave', (ev: MouseEvent) => {
+            const rel = ev.relatedTarget as HTMLElement | null;
+            const intoNode = rel && (rel.closest ? rel.closest('jmnode') : null);
+            if (intoNode) return;
+            if (this.hoverHideTimeoutId != null) { try { window.clearTimeout(this.hoverHideTimeoutId); } catch {} }
+            this.hoverHideTimeoutId = window.setTimeout(() => {
+              this.hoverHideTimeoutId = null;
+              this.hide();
+            }, 150);
+          });
+          (popup as any).__mm_popup_bound = true;
+        }
+      } catch {}
+      if (this.hoverPopupEl && this.hoverPopupEl.parentElement !== this.containerElDiv) {
+        this.containerElDiv!.appendChild(this.hoverPopupEl);
+      }
+      if (this.hoverHideTimeoutId != null) { try { window.clearTimeout(this.hoverHideTimeoutId); } catch {} this.hoverHideTimeoutId = null; }
+      this.hoverPopupForNodeId = nodeId;
+      const popup = this.hoverPopupEl!;
+      try { popup.classList.add('markdown-rendered'); } catch {}
+      popup.style.whiteSpace = 'normal';
+      popup.innerHTML = '';
+      try {
+        MarkdownRenderer.renderMarkdown(body.trim(), popup, this.file?.path ?? '', this.plugin);
+      } catch {
+        const fallback = document.createElement('div');
+        fallback.textContent = body.trim();
+        popup.appendChild(fallback);
+      }
+      this.updatePosition();
+      if (this.hoverPopupRAF == null) {
+        const tick = () => {
+          this.updatePosition();
+          if (this.hoverPopupEl && this.hoverPopupEl.style.display !== 'none') {
+            this.hoverPopupRAF = window.requestAnimationFrame(tick);
+          } else {
+            if (this.hoverPopupRAF != null) { try { window.cancelAnimationFrame(this.hoverPopupRAF); } catch {}; this.hoverPopupRAF = null; }
+          }
+        };
+        this.hoverPopupRAF = window.requestAnimationFrame(tick);
       }
     } catch {}
-    // Re-append if lost on refresh
-    if (deps.hoverPopupEl && deps.hoverPopupEl.parentElement !== deps.containerElDiv) {
-      deps.containerElDiv.appendChild(deps.hoverPopupEl);
-    }
-    // Cancel any pending hide when (re)showing the popup
-    if (deps.hoverHideTimeoutId != null) { try { window.clearTimeout(deps.hoverHideTimeoutId); } catch {} deps.setHoverHideTimeoutId(null); }
-    deps.setHoverPopupForNodeId(nodeId);
-    // Render markdown preview into popup
-    const popup = deps.hoverPopupEl!;
-    try { popup.classList.add('markdown-rendered'); } catch {}
-    popup.style.whiteSpace = 'normal';
-    popup.innerHTML = '';
-    // Add title line for the current node
+  }
+
+  hide() {
     try {
-      // title provided by main via DOM/jm/headings (keep simple)
+      if (this.hoverPopupEl) this.hoverPopupEl.style.display = 'none';
+      this.hoverPopupForNodeId = null;
+      if (this.hoverPopupRAF != null) { try { window.cancelAnimationFrame(this.hoverPopupRAF); } catch {}; this.hoverPopupRAF = null; }
     } catch {}
+  }
+
+  updatePosition() {
     try {
-      // Use Obsidian's renderer to get theme-consistent preview
-      MarkdownRenderer.renderMarkdown(body.trim(), popup, deps.file?.path ?? '', deps.plugin);
-    } catch {
-      // Fallback to plain text if rendering fails
-      const fallback = document.createElement('div');
-      fallback.textContent = body.trim();
-      popup.appendChild(fallback);
-    }
-    deps.updateHoverPopupPosition();
-    // Follow transforms while visible
-    if (deps.hoverPopupRAF == null) {
-      const tick = () => {
-        deps.updateHoverPopupPosition();
-        if (deps.hoverPopupEl && deps.hoverPopupEl.style.display !== 'none') {
-          deps.setHoverPopupRAF(window.requestAnimationFrame(tick));
+      if (!this.hoverPopupEl || !this.containerElDiv || !this.hoverPopupForNodeId) return;
+      const nodeEl = this.containerElDiv.querySelector(`jmnode[nodeid="${this.hoverPopupForNodeId}"]`) as HTMLElement | null;
+      if (!nodeEl) return;
+      const rect = nodeEl.getBoundingClientRect();
+      const hostRect = this.containerElDiv.getBoundingClientRect();
+      const node = this.jm?.get_node?.(this.hoverPopupForNodeId);
+      const isLeft = node && (node.direction === (window.jsMind?.direction?.left ?? 'left'));
+      const gap = 8;
+      const margin = 6;
+      const popupEl = this.hoverPopupEl as HTMLDivElement;
+      if (!popupEl.offsetWidth || !popupEl.offsetHeight || popupEl.style.display === 'none') {
+        popupEl.style.visibility = 'hidden';
+        popupEl.style.display = 'block';
+      }
+      const popupW = popupEl.offsetWidth || 220;
+      const popupH = popupEl.offsetHeight || 180;
+      let x = isLeft ? (rect.left - hostRect.left) - (popupW + gap) : (rect.right - hostRect.left) + gap;
+      if (!isLeft && (x + popupW > hostRect.width - margin)) {
+        x = (rect.left - hostRect.left) - (popupW + gap);
+      }
+      if (x < margin) x = margin;
+      const nodeLeft = rect.left - hostRect.left;
+      const nodeRight = rect.right - hostRect.left;
+      const popupLeft = x;
+      const popupRight = x + popupW;
+      const overlapsHorizontally = !(popupRight <= nodeLeft - gap || popupLeft >= nodeRight + gap);
+      let y: number = rect.top - hostRect.top;
+      if (overlapsHorizontally) {
+        const spaceBelow = hostRect.bottom - rect.bottom - margin;
+        const spaceAbove = rect.top - hostRect.top - margin;
+        if (spaceBelow >= popupH + gap || spaceBelow >= spaceAbove) {
+          y = rect.bottom - hostRect.top + gap;
         } else {
-          if (deps.hoverPopupRAF != null) { try { window.cancelAnimationFrame(deps.hoverPopupRAF); } catch {}; deps.setHoverPopupRAF(null); }
+          y = rect.top - hostRect.top - popupH - gap;
+          if (y < margin) y = margin;
         }
-      };
-      deps.setHoverPopupRAF(window.requestAnimationFrame(tick));
-    }
-  } catch {}
-}
-
-export function toolsHideHoverPopup(deps: PopupState) {
-  try {
-    if (deps.hoverPopupEl) deps.hoverPopupEl.style.display = 'none';
-    deps.setHoverPopupForNodeId(null);
-    if (deps.hoverPopupRAF != null) { try { window.cancelAnimationFrame(deps.hoverPopupRAF); } catch {}; deps.setHoverPopupRAF(null); }
-  } catch {}
-}
-
-export type ButtonState = CommonDeps & {
-  addButtonEl: HTMLButtonElement | null;
-  deleteButtonEl: HTMLButtonElement | null;
-  addButtonForNodeId: string | null;
-  setAddButtonEl: (el: HTMLButtonElement | null) => void;
-  setDeleteButtonEl: (el: HTMLButtonElement | null) => void;
-  setAddButtonForNodeId: (id: string | null) => void;
-  updateAddButtonPosition: () => void;
-  addChildUnder: (id: string) => void;
-  deleteHeadingById: (id: string) => void;
-  addButtonRAF: number | null;
-  setAddButtonRAF: (id: number | null) => void;
-};
-
-export function toolsShowAddButton(nodeId: string, deps: ButtonState) {
-  try {
-    if (!deps.jm || !deps.containerElDiv) return;
-    if (!deps.shouldMindmapDriveMarkdown()) return;
-    if (deps.isMindmapEditingActive()) return;
-    const node = deps.jm.get_node?.(nodeId);
-    if (!node) { toolsHideAddButton(deps); return; }
-    let btn = deps.addButtonEl;
-    if (!btn) {
-      btn = document.createElement('button');
-      btn.textContent = '+';
-      btn.title = 'Add child';
-      btn.style.position = 'absolute';
-      btn.style.zIndex = '5';
-      btn.style.width = '22px';
-      btn.style.height = '22px';
-      btn.style.lineHeight = '22px';
-      btn.style.padding = '0';
-      btn.style.textAlign = 'center';
-      btn.style.boxSizing = 'border-box';
-      btn.style.borderRadius = '11px';
-      btn.style.border = '1px solid #90c2ff';
-      btn.style.background = '#e8f2ff';
-      btn.style.color = '#0b3d91';
-      btn.style.cursor = 'pointer';
-      deps.containerElDiv.appendChild(btn);
-      deps.setAddButtonEl(btn);
-    }
-    if (deps.addButtonEl && deps.addButtonEl.parentElement !== deps.containerElDiv) {
-      deps.containerElDiv.appendChild(deps.addButtonEl);
-    }
-    deps.addButtonEl!.onclick = (e) => { e.stopPropagation(); deps.addChildUnder(nodeId); };
-    if (!deps.deleteButtonEl) {
-      const del = document.createElement('button');
-      del.textContent = '−';
-      del.title = 'Delete node';
-      del.style.position = 'absolute';
-      del.style.zIndex = '5';
-      del.style.width = '22px';
-      del.style.height = '22px';
-      del.style.lineHeight = '22px';
-      del.style.padding = '0';
-      del.style.textAlign = 'center';
-      del.style.boxSizing = 'border-box';
-      del.style.borderRadius = '11px';
-      del.style.border = '1px solid #ff9aa2';
-      del.style.background = '#ffecef';
-      del.style.color = '#cc0033';
-      del.style.cursor = 'pointer';
-      deps.containerElDiv.appendChild(del);
-      deps.setDeleteButtonEl(del);
-    }
-    if (deps.deleteButtonEl && deps.deleteButtonEl.parentElement !== deps.containerElDiv) {
-      deps.containerElDiv.appendChild(deps.deleteButtonEl);
-    }
-    deps.deleteButtonEl!.onclick = (e) => { e.stopPropagation(); deps.deleteHeadingById(nodeId); };
-    deps.setAddButtonForNodeId(nodeId);
-    deps.updateAddButtonPosition();
-    if (deps.addButtonRAF == null) {
-      const tick = () => {
-        deps.updateAddButtonPosition();
-        if (deps.addButtonEl && deps.addButtonEl.style.display !== 'none') {
-          deps.setAddButtonRAF(window.requestAnimationFrame(tick));
-        } else {
-          if (deps.addButtonRAF != null) { try { window.cancelAnimationFrame(deps.addButtonRAF); } catch {}; deps.setAddButtonRAF(null); }
-        }
-      };
-      deps.setAddButtonRAF(window.requestAnimationFrame(tick));
-    }
-    if (node.isroot && deps.deleteButtonEl) {
-      deps.deleteButtonEl.style.display = 'none';
-    }
-  } catch {}
-}
-
-export function toolsHideAddButton(deps: ButtonState) {
-  if (deps.addButtonEl) {
-    deps.addButtonEl.style.display = 'none';
-    deps.setAddButtonForNodeId(null);
-    if (deps.addButtonRAF != null) {
-      try { window.cancelAnimationFrame(deps.addButtonRAF); } catch {}
-      deps.setAddButtonRAF(null);
-    }
+      }
+      popupEl.style.left = `${x}px`;
+      popupEl.style.top = `${Math.max(0, y)}px`;
+      popupEl.style.display = 'block';
+      popupEl.style.visibility = 'visible';
+    } catch {}
   }
-  if (deps.deleteButtonEl) {
-    deps.deleteButtonEl.style.display = 'none';
+
+  extractNodeImmediateBody(nodeId: string): string {
+    try {
+      const content = this.lastFileContent || '';
+      if (!content) return '';
+      const headings = (this.headingsCache && (this.headingsCache as any[]).length) ? (this.headingsCache as any[]) : this.computeHeadingSections(content);
+      const idx = headings.findIndex((h: any) => h.id === nodeId);
+      if (idx === -1) return '';
+      const h = headings[idx] as any;
+      const startBody = Math.min(content.length, Math.max(0, h.headingTextEnd + 1));
+      const next = headings[idx + 1] as any;
+      const endBody = next ? Math.max(startBody, next.start - 1) : Math.max(startBody, content.length);
+      const raw = content.slice(startBody, endBody);
+      return raw.replace(/^\s*\n/, '').trimEnd();
+    } catch { return ''; }
   }
 }
 
+export class ButtonController {
+  containerElDiv: HTMLDivElement | null = null;
+  jm: any | null = null;
+  app: any;
+  plugin: any;
+  file: TFile | null = null;
+  shouldMindmapDriveMarkdown: () => boolean = () => false;
+  isMindmapEditingActive: () => boolean = () => false;
+  addButtonEl: HTMLButtonElement | null = null;
+  deleteButtonEl: HTMLButtonElement | null = null;
+  addButtonForNodeId: string | null = null;
+  addButtonRAF: number | null = null;
+  deleteHeadingById: (id: string) => void = () => {};
+  computeHeadingSections: (text: string) => any[] = () => [];
+
+  show(nodeId: string) {
+    try {
+      if (!this.jm || !this.containerElDiv) return;
+      if (!this.shouldMindmapDriveMarkdown()) return;
+      if (this.isMindmapEditingActive()) return;
+      const node = this.jm.get_node?.(nodeId);
+      if (!node) { this.hide(); return; }
+      let btn = this.addButtonEl;
+      if (!btn) {
+        btn = document.createElement('button');
+        btn.textContent = '+';
+        btn.title = 'Add child';
+        btn.style.position = 'absolute';
+        btn.style.zIndex = '5';
+        btn.style.width = '22px';
+        btn.style.height = '22px';
+        btn.style.lineHeight = '22px';
+        btn.style.padding = '0';
+        btn.style.textAlign = 'center';
+        btn.style.boxSizing = 'border-box';
+        btn.style.borderRadius = '11px';
+        btn.style.border = '1px solid #90c2ff';
+        btn.style.background = '#e8f2ff';
+        btn.style.color = '#0b3d91';
+        btn.style.cursor = 'pointer';
+        this.containerElDiv!.appendChild(btn);
+        this.addButtonEl = btn;
+      }
+      if (this.addButtonEl && this.addButtonEl.parentElement !== this.containerElDiv) {
+        this.containerElDiv!.appendChild(this.addButtonEl);
+      }
+      this.addButtonEl!.onclick = (e) => { e.stopPropagation(); this.addChildUnder(nodeId); };
+      if (!this.deleteButtonEl) {
+        const del = document.createElement('button');
+        del.textContent = '−';
+        del.title = 'Delete node';
+        del.style.position = 'absolute';
+        del.style.zIndex = '5';
+        del.style.width = '22px';
+        del.style.height = '22px';
+        del.style.lineHeight = '22px';
+        del.style.padding = '0';
+        del.style.textAlign = 'center';
+        del.style.boxSizing = 'border-box';
+        del.style.borderRadius = '11px';
+        del.style.border = '1px solid #ff9aa2';
+        del.style.background = '#ffecef';
+        del.style.color = '#cc0033';
+        del.style.cursor = 'pointer';
+        this.containerElDiv!.appendChild(del);
+        this.deleteButtonEl = del;
+      }
+      if (this.deleteButtonEl && this.deleteButtonEl.parentElement !== this.containerElDiv) {
+        this.containerElDiv!.appendChild(this.deleteButtonEl);
+      }
+      this.deleteButtonEl!.onclick = (e) => { e.stopPropagation(); this.deleteHeadingById(nodeId); };
+      this.addButtonForNodeId = nodeId;
+      this.updatePosition();
+      if (this.addButtonRAF == null) {
+        const tick = () => {
+          this.updatePosition();
+          if (this.addButtonEl && this.addButtonEl.style.display !== 'none') {
+            this.addButtonRAF = window.requestAnimationFrame(tick);
+          } else {
+            if (this.addButtonRAF != null) { try { window.cancelAnimationFrame(this.addButtonRAF); } catch {}; this.addButtonRAF = null; }
+          }
+        };
+        this.addButtonRAF = window.requestAnimationFrame(tick);
+      }
+      if (node.isroot && this.deleteButtonEl) {
+        this.deleteButtonEl.style.display = 'none';
+      }
+    } catch {}
+  }
+
+  hide() {
+    try {
+      if (this.addButtonEl) {
+        this.addButtonEl.style.display = 'none';
+        this.addButtonForNodeId = null;
+        if (this.addButtonRAF != null) {
+          try { window.cancelAnimationFrame(this.addButtonRAF); } catch {}
+          this.addButtonRAF = null;
+        }
+      }
+      if (this.deleteButtonEl) {
+        this.deleteButtonEl.style.display = 'none';
+      }
+    } catch {}
+  }
+
+  updatePosition() {
+    try {
+      if (!this.addButtonEl || !this.containerElDiv || !this.addButtonForNodeId) return;
+      const nodeEl = this.containerElDiv.querySelector(`jmnode[nodeid="${this.addButtonForNodeId}"]`) as HTMLElement | null;
+      if (!nodeEl) return;
+      const node = this.jm?.get_node?.(this.addButtonForNodeId);
+      const expanderEl = this.containerElDiv.querySelector(`jmexpander[nodeid="${this.addButtonForNodeId}"]`) as HTMLElement | null;
+      const rect = nodeEl.getBoundingClientRect();
+      const hostRect = this.containerElDiv.getBoundingClientRect();
+      const isLeft = node && (node.direction === (window.jsMind?.direction?.left ?? 'left'));
+      const buttonSize = 22;
+      const gapBase = 8;
+      let xAdd = isLeft ? rect.left - hostRect.left - (buttonSize + gapBase + 6) : rect.right - hostRect.left + gapBase + 6;
+      if (expanderEl) {
+        const expRect = expanderEl.getBoundingClientRect();
+        if (!isLeft) {
+          const minLeft = expRect.right - hostRect.left + gapBase;
+          if (xAdd < minLeft) xAdd = minLeft;
+        } else {
+          const maxLeft = expRect.left - hostRect.left - (buttonSize + gapBase);
+          if (xAdd > maxLeft) xAdd = maxLeft;
+        }
+      }
+      const btnH = (this.addButtonEl?.offsetHeight || 22);
+      const centerYRaw = rect.top - hostRect.top + (rect.height - btnH) / 2;
+      const centerY = Math.round(centerYRaw) - 3;
+      this.addButtonEl.style.left = `${xAdd}px`;
+      this.addButtonEl.style.top = `${centerY}px`;
+      this.addButtonEl.style.transform = '';
+      this.addButtonEl.style.display = 'block';
+      if (this.deleteButtonEl) {
+        const gap = 4;
+        const xDel = isLeft ? xAdd - (buttonSize + gap) : xAdd + (buttonSize + gap);
+        this.deleteButtonEl.style.left = `${xDel}px`;
+        this.deleteButtonEl.style.top = `${centerY}px`;
+        this.deleteButtonEl.style.transform = '';
+        this.deleteButtonEl.style.display = 'block';
+      }
+    } catch {}
+  }
+
+  private focusEditorToRange(line: number, chStart: number, chEnd: number) {
+    try {
+      const mdLeaves = this.app.workspace.getLeavesOfType('markdown');
+      for (const leaf of mdLeaves) {
+        const v = leaf.view as any;
+        if (v?.file?.path === this.file?.path) {
+          const mdView = v as MarkdownView;
+          const editor = mdView.editor;
+          const from = { line, ch: chStart } as any;
+          const to = { line, ch: chEnd } as any;
+          setTimeout(() => {
+            try { this.app.workspace.setActiveLeaf(leaf, { focus: true }); } catch {}
+            try { this.app.workspace.revealLeaf(leaf); } catch {}
+            try { (editor as any).focus?.(); } catch {}
+            try { editor.setSelection(from, to); } catch {}
+            try { (editor as any).scrollIntoView({ from, to }, true); } catch {}
+          }, 0);
+          break;
+        }
+      }
+    } catch {}
+  }
+
+  async addChildUnder(nodeId: string) {
+    if (!this.file) return;
+    const content = await this.app.vault.read(this.file);
+    const headings = this.computeHeadingSections(content);
+    const parent = headings.find((h: any) => h.id === nodeId) ?? null;
+    let levelToInsert = 1;
+    let insertPos = content.length;
+    if (parent) {
+      levelToInsert = Math.min(parent.level + 1, 6);
+      insertPos = Math.min(parent.end + 1, content.length);
+    }
+    const headingPrefix = '#'.repeat(levelToInsert);
+    const needLeadingNewline = insertPos > 0 && content.charAt(insertPos - 1) !== '\n';
+    const placeholder = '新标题';
+    const insertText = `${needLeadingNewline ? '\n' : ''}${headingPrefix} ${placeholder}\n`;
+    const updated = content.slice(0, insertPos) + insertText + content.slice(insertPos);
+    await this.app.vault.modify(this.file, updated);
+    new Notice('Child heading inserted');
+    const newHeadingStart = insertPos + (needLeadingNewline ? 1 : 0);
+    const before = updated.slice(0, newHeadingStart);
+    const newLineIndex = (before.match(/\n/g)?.length ?? 0);
+    const chStart = headingPrefix.length + 1;
+    const chEnd = chStart + placeholder.length;
+    this.focusEditorToRange(newLineIndex, chStart, chEnd);
+    this.show(nodeId);
+  }
+}
 

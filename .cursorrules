@@ -266,3 +266,248 @@ class KeyboardManager {
 ---
 
 *Remember: Quality architecture is built through consistent application of sound design principles, not through accumulation of quick fixes.*
+
+
+
+# IntelliBoard Testing Rules
+
+## 📝 Test Case Documentation (测试用例记录)
+
+### Problem Documentation Requirements (问题记录要求)
+- **ALWAYS document issues discussed in chat** - create or update test case files (e.g., `测试用例.md`)
+- Record the following for each issue:
+  - **Problem description**: Clear statement of the bug/issue/exception
+  - **Reproduction steps**: How to trigger the problem
+  - **Expected behavior**: What should happen
+  - **Actual behavior**: What currently happens
+  - **Verification method**: How to confirm the fix works
+  - **Test environment**: iOS version, device, specific conditions
+
+### Test Case File Structure
+```markdown
+# 测试用例.md
+
+## [Module Name] - [Issue ID/Date]
+
+### 问题描述
+- Brief description of the issue
+
+### 复现步骤
+1. Step 1
+2. Step 2
+3. Step 3
+
+### 预期行为
+- What should happen
+
+### 实际行为
+- What currently happens
+
+### 验证方法
+- How to verify the fix
+- Specific test commands or UI actions
+
+### 测试环境
+- iOS version: 
+- Device: 
+- Build configuration: 
+```
+
+## 🔍 Pre-Refactoring Validation (重构前验证)
+
+### Mandatory Pre-Refactoring Checks
+- **ALWAYS search for and read existing test case files** before starting refactoring
+- Look for files named: `测试用例.md`, `test-cases.md`, `验证用例.md`, `手工用例.md`
+- **MUST verify all documented test cases** before completing refactoring
+- Create a pre-refactoring checklist based on existing test cases
+
+### Unit Test Discovery and Execution
+- **Automatically check for existing unit tests** in the module being refactored
+- Search patterns:
+  - `*Tests.swift` files in the same directory or test directory
+  - Test methods starting with `test*`
+  - XCTest framework usage
+- **Run all relevant unit tests** before and after refactoring
+- Use command: `xcodebuild test -scheme IntelliBoard -destination 'platform=iOS Simulator,name=iPhone 16'`
+
+### Test Execution Workflow
+```swift
+// Pre-refactoring test execution example
+func preRefactoringValidation() {
+    // 1. Discover existing tests
+    // 2. Run baseline tests
+    // 3. Document current test results
+    // 4. Proceed with refactoring
+    // 5. Re-run tests
+    // 6. Verify no regressions
+}
+```
+
+## 🧪 Unit Test Creation (单元测试补充)
+
+### Core Module Testing Requirements
+- **MUST create unit tests** for resolved issues in core/foundational modules
+- Prioritize testing for:
+  - **Public APIs**: All public methods and properties
+  - **Business logic**: Core algorithms and decision-making code
+  - **Data processing**: Tokenization, parsing, transformation logic
+  - **Error handling**: Exception cases and edge conditions
+  - **Integration points**: Module interfaces and dependencies
+
+### Test Categories by Module Type
+```swift
+// Core/Foundation modules (MUST have tests)
+- Tokenizers (RobertaTokenizer, etc.)
+- Embedding services
+- Data managers
+- Utility helpers
+- Configuration handlers
+
+// UI modules (SHOULD have tests for logic)
+- View controllers (business logic only)
+- Custom views (interaction logic)
+- Navigation managers
+
+// Extension modules (CONDITIONAL testing)
+- Keyboard extensions (core functionality)
+- Widget extensions (data processing)
+```
+
+### Unit Test Structure Standards
+```swift
+import XCTest
+@testable import IntelliBoard
+
+class [ModuleName]Tests: XCTestCase {
+    var sut: [SystemUnderTest]!
+    
+    override func setUp() {
+        super.setUp()
+        sut = [SystemUnderTest]()
+    }
+    
+    override func tearDown() {
+        sut = nil
+        super.tearDown()
+    }
+    
+    // MARK: - Success Cases
+    func testSuccess_[SpecificScenario]() {
+        // Given
+        // When
+        // Then
+    }
+    
+    // MARK: - Failure Cases
+    func testFailure_[SpecificScenario]() {
+        // Given
+        // When
+        // Then
+    }
+    
+    // MARK: - Edge Cases
+    func testEdgeCase_[SpecificScenario]() {
+        // Given
+        // When
+        // Then
+    }
+}
+```
+
+## 🔄 Continuous Testing Workflow (持续测试流程)
+
+### Testing Integration with Development Cycle
+1. **Issue Discovery**: Document in test case file
+2. **Pre-Development**: Review existing test cases
+3. **During Development**: Run relevant tests continuously
+4. **Post-Development**: Create new unit tests for fixes
+5. **Pre-Commit**: Run full test suite
+6. **Post-Refactoring**: Validate all documented test cases
+
+### Automated Test Execution
+```bash
+# Test discovery and execution script
+#!/bin/bash
+echo "🔍 Discovering test files..."
+find . -name "*Tests.swift" -type f
+
+echo "📋 Checking for test case documentation..."
+find . -name "*测试用例*.md" -o -name "*test-case*.md" -type f
+
+echo "🧪 Running unit tests..."
+xcodebuild test -scheme IntelliBoard -destination 'platform=iOS Simulator,name=iPhone 16'
+
+echo "✅ Test execution complete"
+```
+
+## 📊 Test Coverage and Quality Metrics
+
+### Coverage Requirements
+- **Core modules**: Minimum 80% code coverage
+- **Business logic**: Minimum 90% branch coverage
+- **Public APIs**: 100% method coverage
+- **Critical paths**: 100% coverage with edge cases
+
+### Test Quality Standards
+- **Test naming**: Descriptive names indicating scenario and expected outcome
+- **Test isolation**: Each test should be independent
+- **Test data**: Use meaningful test data, avoid magic numbers
+- **Assertions**: Clear, specific assertions with meaningful messages
+- **Performance**: Tests should complete within reasonable time limits
+
+### Test Maintenance
+- **Regular review**: Update tests when requirements change
+- **Deprecation handling**: Remove tests for deprecated functionality
+- **Refactoring**: Keep tests maintainable and readable
+- **Documentation**: Comment complex test scenarios
+
+## 🚨 Critical Testing Scenarios
+
+### Must-Test Scenarios for IntelliBoard
+```swift
+// Tokenization accuracy
+func testTokenization_ChineseText_ProducesCorrectTokens()
+func testTokenization_SpecialCharacters_HandledCorrectly()
+func testTokenization_EmptyInput_ReturnsEmptyResult()
+
+// Embedding generation
+func testEmbedding_ValidInput_GeneratesConsistentVectors()
+func testEmbedding_InvalidInput_HandlesGracefully()
+
+// Recommendation engine
+func testRecommendation_UserInput_ReturnsRelevantSuggestions()
+func testRecommendation_EmptyQuery_ReturnsDefaultSuggestions()
+
+// Data persistence
+func testCoreData_SaveOperation_PersistsCorrectly()
+func testCoreData_FetchOperation_RetrievesCorrectData()
+```
+
+## ✅ Testing Checklist
+
+### Before Starting Development
+- [ ] Read all existing test case documentation
+- [ ] Identify relevant unit tests
+- [ ] Run baseline test suite
+- [ ] Document current test state
+
+### During Development
+- [ ] Run tests frequently during implementation
+- [ ] Update test cases as issues are resolved
+- [ ] Add new test cases for edge cases discovered
+
+### After Development
+- [ ] Create unit tests for core/foundational fixes
+- [ ] Verify all documented test cases pass
+- [ ] Update test documentation
+- [ ] Run full regression test suite
+
+### Before Code Commit
+- [ ] All unit tests pass
+- [ ] All documented test cases verified
+- [ ] New test cases added for fixes
+- [ ] Test coverage meets requirements
+
+---
+
+*Remember: Testing is not just about finding bugs - it's about building confidence in the system's reliability and maintainability.*
