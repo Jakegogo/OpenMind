@@ -369,6 +369,18 @@ class MindmapView extends ItemView {
         `;
         document.head.appendChild(st2);
       }
+      // Smooth scroll behavior for jsMind inner container and host container
+      const smoothId = 'obsidian-jsmind-smooth-scroll-style';
+      if (!document.getElementById(smoothId)) {
+        const st3 = document.createElement('style');
+        st3.id = smoothId;
+        st3.textContent = `
+          /* Enable smooth programmatic scrolling */
+          #jsmind_container { scroll-behavior: smooth; }
+          .jsmind-inner { scroll-behavior: smooth; }
+        `;
+        document.head.appendChild(st3);
+      }
       // Inject node themes CSS once
       ensureThemeCssInjected(document);
     } catch {}
