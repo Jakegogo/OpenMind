@@ -590,6 +590,135 @@ var VIEW_TYPE_MINDMAP = "obsidian-jsmind-mindmap-view";
 var __mm_lastHeadingsText = null;
 var __mm_lastHeadingsRes = null;
 var __mm_lastHeadingsTs = 0;
+function extractContentTree(markdownText, start, end) {
+  try {
+    const lines = markdownText.split("\n");
+    let acc = 0, startLine = 0, endLine = lines.length - 1;
+    for (let i = 0; i < lines.length; i++) {
+      const len = lines[i].length + 1;
+      if (acc <= start && start < acc + len) startLine = i;
+      if (acc <= end && end <= acc + len) {
+        endLine = Math.max(i, startLine);
+        break;
+      }
+      acc += len;
+    }
+    const atxHeadingRe = /^(#{1,6})\s+.*$/;
+    const setextH1Re = /^=+\s*$/;
+    const setextH2Re = /^-+\s*$/;
+    const isHrTripleDash = (s) => /^\s*---\s*$/.test(s);
+    let stopAt = endLine;
+    {
+      let inCode2 = false;
+      for (let i = startLine; i <= endLine && i < lines.length; i++) {
+        const line = lines[i];
+        if (/^\s*```/.test(line)) {
+          inCode2 = !inCode2;
+          continue;
+        }
+        if (inCode2) continue;
+        if (atxHeadingRe.test(line)) {
+          stopAt = i - 1;
+          break;
+        }
+        const next = i + 1 <= endLine ? lines[i + 1] : void 0;
+        if (next && (setextH1Re.test(next) || setextH2Re.test(next) && !isHrTripleDash(next))) {
+          stopAt = i - 1;
+          break;
+        }
+      }
+    }
+    endLine = Math.max(startLine, Math.min(endLine, stopAt));
+    const root = [];
+    const stack = [{ depth: -1, items: root }];
+    let inCode = false;
+    const BULLET = "[-*+\u2013\u2014\u2022]";
+    const RE_LIST_ITEM = new RegExp(`^(\\s*)(?:${BULLET}\\s+|\\d+\\.\\s+)(.+)$`);
+    const RE_INLINE_BOLD = /\*\*(.+?)\*\*/;
+    const RE_BOLD_LINE = /^(\s*)\*\*(.+?)\*\*[：:]?.*$/;
+    const RE_NUM_BOLD = /^(\s*)\d+\.\s*\*\*(.+?)\*\*[：:]?.*$/;
+    const RE_TASK_UNCHECKED = new RegExp(`^(\\s*)${BULLET}\\s*\\[\\s\\]\\s*(.+)$`);
+    const RE_TASK_CHECKED = new RegExp(`^(\\s*)${BULLET}\\s*\\[(?:x|X)\\]\\s*(.+)$`);
+    let structuralDepthBase = 0;
+    for (let i = startLine; i <= endLine && i < lines.length; i++) {
+      const raw = lines[i];
+      if (/^\s*$/.test(raw)) {
+        structuralDepthBase = 0;
+        continue;
+      }
+      if (/^\s*```/.test(raw)) {
+        inCode = !inCode;
+        continue;
+      }
+      if (inCode) continue;
+      let label = null;
+      let depthSpaces = 0;
+      {
+        const m = raw.match(RE_NUM_BOLD);
+        if (m) {
+          depthSpaces = m[1].length;
+          label = (m[2] || "").trim();
+        }
+      }
+      if (!label) {
+        const m = raw.match(RE_BOLD_LINE);
+        if (m) {
+          depthSpaces = 0;
+          label = (m[2] || "").trim();
+        }
+      }
+      if (!label) {
+        let m = raw.match(RE_TASK_UNCHECKED);
+        if (!m) m = raw.match(RE_TASK_CHECKED);
+        if (m) {
+          depthSpaces = m[1].length;
+          const taskText = (m[2] || "").trim();
+          const b = taskText.match(RE_INLINE_BOLD);
+          label = (b ? b[1] : taskText).trim();
+        }
+      }
+      if (!label) {
+        const m = raw.match(RE_LIST_ITEM);
+        if (m) {
+          depthSpaces = m[1].length;
+          const liText = (m[2] || "").trim();
+          const b = liText.match(RE_INLINE_BOLD);
+          label = b ? (b[1] || "").trim() : liText;
+        }
+      }
+      if (!label) {
+        const bold = raw.match(/^\s*\*\*(.+?)\*\*\s*$/);
+        const italic = raw.match(/^\s*\*(.+?)\*\s*$/) || raw.match(/^\s*_(.+?)_\s*$/);
+        if (bold) {
+          label = bold[1].trim();
+          depthSpaces = 0;
+        } else if (italic) {
+          label = italic[1].trim();
+          depthSpaces = 2;
+        }
+      }
+      if (!label) continue;
+      let depth = Math.floor(depthSpaces / 2);
+      if (/^\s*\*\*(.+?)\*\*\s*$/.test(raw)) {
+        depth = 0;
+        structuralDepthBase = 1;
+      } else if (/^\s*(?:\*.+?\*|_.+?_)\s*$/.test(raw)) {
+        depth = Math.max(structuralDepthBase, 1);
+        structuralDepthBase = depth + 1;
+      } else {
+        depth = Math.max(depth, structuralDepthBase);
+      }
+      while (stack.length && stack[stack.length - 1].depth >= depth) stack.pop();
+      const container = stack[stack.length - 1].items;
+      const node = { label, children: [] };
+      container.push(node);
+      stack.push({ depth, items: node.children });
+    }
+    return root;
+  } catch {
+    return [];
+  }
+}
 function computeHeadingSections(markdownText) {
   try {
     const now = Date.now();
@@ -743,6 +872,70 @@ function buildJsMindTreeFromHeadings(headings, fileName) {
   }
   return { meta: { name: fileName }, format: "node_tree", data: root };
 }
+function buildJsMindTreeWithContent(headings, fileName, markdownText, includeContent) {
+  const firstH1 = headings.find((h) => h.level === 1);
+  let rootId;
+  let rootTopic;
+  if (firstH1) {
+    rootId = firstH1.id;
+    rootTopic = firstH1.title || fileName;
+  } else {
+    rootId = `virtual_root_${fileName}`;
+    rootTopic = fileName.replace(/\.md$/i, "");
+  }
+  const byId = /* @__PURE__ */ new Map();
+  const root = { id: rootId, topic: rootTopic, children: [] };
+  byId.set(rootId, root);
+  for (const h of headings) {
+    if (firstH1 && h.id === firstH1.id) continue;
+    const node = { id: h.id, topic: h.title, children: [] };
+    byId.set(h.id, node);
+  }
+  const contentParentMap = /* @__PURE__ */ new Map();
+  if (includeContent && headings.length === 0) {
+    const itemsTree = extractContentTree(markdownText, 0, markdownText.length);
+    let seq = 0;
+    const addChildren = (host, children) => {
+      for (const child of children) {
+        seq += 1;
+        const cid = `c_${rootId}_${seq}`;
+        const cnode = { id: cid, topic: child.label, children: [] };
+        host.children.push(cnode);
+        contentParentMap.set(cid, rootId);
+        if (Array.isArray(child.children) && child.children.length > 0) {
+          addChildren(cnode, child.children);
+        }
+      }
+    };
+    addChildren(root, itemsTree);
+    return { mind: { meta: { name: fileName }, format: "node_tree", data: root }, contentParentMap };
+  }
+  for (const h of headings) {
+    if (firstH1 && h.id === firstH1.id) continue;
+    const parentKey = h.parentId ?? (firstH1 ? firstH1.id : rootId);
+    const parent = byId.get(parentKey) ?? root;
+    const headingNode = byId.get(h.id);
+    parent.children.push(headingNode);
+    if (includeContent) {
+      const itemsTree = extractContentTree(markdownText, h.headingTextEnd + 1, h.end);
+      let seq = 0;
+      const addChildren = (host, children) => {
+        for (const child of children) {
+          seq += 1;
+          const cid = `c_${h.id}_${seq}`;
+          const cnode = { id: cid, topic: child.label, children: [] };
+          host.children.push(cnode);
+          contentParentMap.set(cid, h.id);
+          if (Array.isArray(child.children) && child.children.length > 0) {
+            addChildren(cnode, child.children);
+          }
+        }
+      };
+      addChildren(headingNode, itemsTree);
+    }
+  }
+  return { mind: { meta: { name: fileName }, format: "node_tree", data: root }, contentParentMap };
+}
 var MindmapView = class extends import_obsidian2.ItemView {
   constructor(leaf, plugin) {
     super(leaf);
@@ -782,6 +975,8 @@ var MindmapView = class extends import_obsidian2.ItemView {
     // runtime id -> stable key
     this.stableKeyToId = /* @__PURE__ */ new Map();
     // stable key -> runtime id
+    // Content nodes mapping (content-id -> parent heading-id)
+    this.contentParentMap = /* @__PURE__ */ new Map();
     // FSM for sync control
     this.syncState = "scroll";
     // Controllers (OOP) for UI helpers
@@ -866,6 +1061,17 @@ var MindmapView = class extends import_obsidian2.ItemView {
     } catch {
     }
     return "";
+  }
+  isContentNode(id) {
+    return typeof id === "string" && id.startsWith("c_");
+  }
+  resolveHeadingId(id) {
+    if (!id) return null;
+    if (this.isContentNode(id)) {
+      const parent = this.contentParentMap.get(id);
+      return parent || null;
+    }
+    return id;
   }
   isMindmapEditingActive() {
     try {
@@ -973,15 +1179,26 @@ var MindmapView = class extends import_obsidian2.ItemView {
           /* Enable smooth programmatic scrolling */
           #jsmind_container { scroll-behavior: smooth; }
           .jsmind-inner { scroll-behavior: smooth; }
+          /* Content node visuals: no box, only a bottom line */
+          jmnode.mm-content-node { background: transparent !important; border: none !important; box-shadow: none !important; border-radius: 0 !important; padding: 0 2px 2px 2px; }
+          jmnode.mm-content-node { border-bottom: 1px solid var(--background-modifier-border); }
         `;
         document.head.appendChild(st3);
       }
       ensureThemeCssInjected(document);
+      this.injectContentNodeOverrideCss();
     } catch {
     }
     const toolbar = this.contentEl.createDiv({ cls: "mm-toolbar" });
     const refreshBtn = toolbar.createEl("button", { text: "Refresh" });
     const followBtn = toolbar.createEl("button", { text: "Follow Scroll" });
+    const includeWrap = toolbar.createEl("label");
+    includeWrap.style.display = "flex";
+    includeWrap.style.alignItems = "center";
+    includeWrap.style.gap = "6px";
+    const includeCb = includeWrap.createEl("input", { type: "checkbox" });
+    includeCb.checked = !!this.plugin.settings?.includeContent;
+    includeWrap.createSpan({ text: "Include content (ul/ol)" });
     const container = this.contentEl.createDiv();
     container.id = "jsmind_container";
     container.style.width = "100%";
@@ -995,6 +1212,14 @@ var MindmapView = class extends import_obsidian2.ItemView {
     refreshBtn.addEventListener("click", () => this.refresh());
     followBtn.addEventListener("click", () => {
       this.forceEnterScroll();
+    });
+    includeCb.addEventListener("change", async () => {
+      try {
+        this.plugin.settings.includeContent = !!includeCb.checked;
+        await this.plugin.saveData({ collapsedByFile: this.plugin.collapsedByFile, autoFollow: this.plugin.settings.autoFollow, theme: this.plugin.settings.theme, enablePopup: this.plugin.settings.enablePopup, includeContent: this.plugin.settings.includeContent });
+        await this.refresh();
+      } catch {
+      }
     });
     try {
       await this.ensureJsMindLoaded();
@@ -1186,18 +1411,43 @@ var MindmapView = class extends import_obsidian2.ItemView {
     this.headingsCache = computeHeadingSections(content);
     this.popup.headingsCache = this.headingsCache;
     this.rebuildStableKeyIndex();
-    const mind = buildJsMindTreeFromHeadings(this.headingsCache, this.file.name);
+    const includeContent = !!this.plugin.settings?.includeContent;
+    let mind;
+    if (includeContent) {
+      const built = buildJsMindTreeWithContent(this.headingsCache, this.file.name, content, true);
+      mind = built.mind;
+      this.contentParentMap = built.contentParentMap;
+    } else {
+      mind = buildJsMindTreeFromHeadings(this.headingsCache, this.file.name);
+      this.contentParentMap = /* @__PURE__ */ new Map();
+    }
     if (!this.containerElDiv || !window.jsMind) return;
     this.containerElDiv.empty();
     this.containerElDiv.id = "jsmind_container";
     const themeKey = this.plugin.settings?.theme || "default";
     const options = { container: "jsmind_container", theme: getJsMindThemeNameFromSetting(themeKey), editable: true, mode: "side", view: { engine: "svg", expander_style: "number", draggable: false, line_width: 1 } };
+    options.view.custom_node_render = (jm, ele, node) => {
+      try {
+        const id = String(node?.id ?? "");
+        if (id.startsWith("c_")) {
+          ele.textContent = String(node?.topic ?? "");
+          ele.classList.add("mm-content-node");
+          return true;
+        }
+      } catch {
+      }
+      return false;
+    };
     this.jm = new window.jsMind(options);
     this.wrapCenterRootIfNeeded();
     this.allowCenterRoot = false;
     this.jm.show(mind);
     try {
       ensureThemeCssInjected(document);
+    } catch {
+    }
+    try {
+      this.injectContentNodeOverrideCss();
     } catch {
     }
     this.restoreViewport(this.prevViewport);
@@ -1235,6 +1485,10 @@ var MindmapView = class extends import_obsidian2.ItemView {
     } catch {
     }
     try {
+      this.injectContentNodeOverrideCss();
+    } catch {
+    }
+    try {
       const attachSelectionSync = () => {
         if (this.jm && typeof this.jm.add_event_listener === "function") {
           this.jm.add_event_listener((type, data) => {
@@ -1244,6 +1498,7 @@ var MindmapView = class extends import_obsidian2.ItemView {
               return;
             }
             if ((evt === "edit" || evt === "update_node" || evt === "nodechanged" || evt === "topic_change" || evt === "textedit") && nodeIdFromEvent) {
+              if (this.isContentNode(nodeIdFromEvent)) return;
               if (!this.isActiveLeafMindmapView()) return;
               if (!this.isMindmapEditingActive()) return;
               const nodeId = nodeIdFromEvent;
@@ -1256,6 +1511,7 @@ var MindmapView = class extends import_obsidian2.ItemView {
               this.hideAddButton();
             }
             if (nodeIdFromEvent) {
+              if (this.isContentNode(nodeIdFromEvent)) return;
               const key = this.idToStableKey.get(nodeIdFromEvent);
               if (key) {
                 if (evt === "collapse_node" || evt === "collapse") {
@@ -1287,9 +1543,17 @@ var MindmapView = class extends import_obsidian2.ItemView {
               if (this.revealTimeoutId != null) window.clearTimeout(this.revealTimeoutId);
               this.revealTimeoutId = window.setTimeout(() => {
                 if (Date.now() - this.lastDblClickAtMs < 350) return;
-                this.revealHeadingById(nodeId, { focusEditor: true, activateLeaf: true });
-                this.showAddButton(nodeId);
-                this.lastSyncedNodeId = nodeId;
+                if (this.isContentNode(nodeId)) {
+                  this.hideAddButton();
+                } else {
+                  const targetId = this.resolveHeadingId(nodeId);
+                  if (targetId) {
+                    this.revealHeadingById(targetId, { focusEditor: true, activateLeaf: true });
+                    if (targetId === nodeId) this.showAddButton(targetId);
+                    else this.hideAddButton();
+                    this.lastSyncedNodeId = targetId;
+                  }
+                }
                 this.revealTimeoutId = null;
               }, 200);
             }
@@ -1655,8 +1919,9 @@ var MindmapView = class extends import_obsidian2.ItemView {
   selectMindmapNodeById(nodeId, center) {
     if (!this.jm) return;
     try {
-      const node = this.jm.get_node ? this.jm.get_node(nodeId) : null;
-      if (this.jm.select_node) this.jm.select_node(nodeId);
+      const targetId = this.resolveHeadingId(nodeId) || nodeId;
+      const node = this.jm.get_node ? this.jm.get_node(targetId) : null;
+      if (this.jm.select_node) this.jm.select_node(targetId);
       const allowCenter = !!(center && node && this.shouldCenterOnMarkdownSelection());
       if (allowCenter) {
         this.allowCenterRoot = true;
@@ -1678,9 +1943,10 @@ var MindmapView = class extends import_obsidian2.ItemView {
   ensureMindmapNodeVisible(nodeId) {
     try {
       if (!this.jm || !this.containerElDiv) return;
-      const node = this.jm.get_node ? this.jm.get_node(nodeId) : null;
+      const node = this.jm.get_node ? this.jm.get_node(this.resolveHeadingId(nodeId) || nodeId) : null;
       if (!node) return;
-      const nodeEl = this.containerElDiv.querySelector(`jmnode[nodeid="${nodeId}"]`);
+      const actualId = this.resolveHeadingId(nodeId) || nodeId;
+      const nodeEl = this.containerElDiv.querySelector(`jmnode[nodeid="${actualId}"]`);
       if (!nodeEl) return;
       const hostRect = this.containerElDiv.getBoundingClientRect();
       const rect = nodeEl.getBoundingClientRect();
@@ -2028,12 +2294,41 @@ var MindmapView = class extends import_obsidian2.ItemView {
     }
     return false;
   }
+  injectContentNodeOverrideCss() {
+    try {
+      const id = "obsidian-jsmind-content-node-override";
+      let el = document.getElementById(id);
+      const css = `
+        /* Increase specificity over: body:not(.theme-dark) jmnodes.theme-obsidian jmnode */
+        body:not(.theme-dark) jmnodes.theme-obsidian jmnode.mm-content-node,
+        body.theme-dark jmnodes.theme-obsidian jmnode.mm-content-node,
+        jmnodes.theme-obsidian jmnode.mm-content-node {
+          background: transparent !important;
+          background-color: transparent !important;
+          box-shadow: none !important;
+          border: none !important;
+          border-radius: 0 !important;
+          padding-bottom: 1.5px !important;
+          border-bottom: 1.5px solid var(--background-modifier-border) !important;
+        }
+      `;
+      if (!el) {
+        el = document.createElement("style");
+        el.id = id;
+        el.textContent = css;
+        document.head.appendChild(el);
+      } else {
+        el.textContent = css;
+      }
+    } catch {
+    }
+  }
 };
 var MindmapPlugin = class extends import_obsidian2.Plugin {
   constructor() {
     super(...arguments);
     this.collapsedByFile = {};
-    this.settings = { autoFollow: true, theme: "default", enablePopup: true };
+    this.settings = { autoFollow: true, theme: "default", enablePopup: true, includeContent: false };
   }
   async onload() {
     try {
@@ -2057,6 +2352,7 @@ var MindmapPlugin = class extends import_obsidian2.Plugin {
         if (typeof data.autoFollow === "boolean") this.settings.autoFollow = data.autoFollow;
         if (data.theme) this.settings.theme = data.theme;
         if (typeof data.enablePopup === "boolean") this.settings.enablePopup = data.enablePopup;
+        if (typeof data.includeContent === "boolean") this.settings.includeContent = data.includeContent;
       }
       if (data && typeof data === "object" && data.collapsedByFile) {
         const raw = data.collapsedByFile;
@@ -2162,12 +2458,24 @@ var MindmapSettingTab = class extends import_obsidian2.PluginSettingTab {
     });
     new import_obsidian2.Setting(containerEl).setName("Show hover popup").setDesc("Show a Markdown preview popup when hovering a mindmap node").addToggle((t) => t.setValue(this.plugin.settings.enablePopup).onChange(async (v) => {
       this.plugin.settings.enablePopup = v;
-      await this.plugin.saveData({ collapsedByFile: this.plugin.collapsedByFile, autoFollow: this.plugin.settings.autoFollow, theme: this.plugin.settings.theme, enablePopup: this.plugin.settings.enablePopup });
+      await this.plugin.saveData({ collapsedByFile: this.plugin.collapsedByFile, autoFollow: this.plugin.settings.autoFollow, theme: this.plugin.settings.theme, enablePopup: this.plugin.settings.enablePopup, includeContent: this.plugin.settings.includeContent });
       try {
         const leaves = this.app.workspace.getLeavesOfType("obsidian-jsmind-mindmap-view");
         for (const leaf of leaves) {
           const view = leaf.view;
           view.hideHoverPopup?.();
+          await view.refresh?.();
+        }
+      } catch {
+      }
+    }));
+    new import_obsidian2.Setting(containerEl).setName("Include content lists").setDesc("Add ul/ol list items as content nodes under headings").addToggle((t) => t.setValue(!!this.plugin.settings.includeContent).onChange(async (v) => {
+      this.plugin.settings.includeContent = v;
+      await this.plugin.saveData({ collapsedByFile: this.plugin.collapsedByFile, autoFollow: this.plugin.settings.autoFollow, theme: this.plugin.settings.theme, enablePopup: this.plugin.settings.enablePopup, includeContent: this.plugin.settings.includeContent });
+      try {
+        const leaves = this.app.workspace.getLeavesOfType("obsidian-jsmind-mindmap-view");
+        for (const leaf of leaves) {
+          const view = leaf.view;
           await view.refresh?.();
         }
       } catch {
