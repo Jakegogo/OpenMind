@@ -889,11 +889,59 @@ class MindmapView extends ItemView {
     options.view.custom_node_render = (jm: any, ele: HTMLElement, node: any) => {
       try {
         const id = String(node?.id ?? '');
-        if (id.startsWith('c_')) {
-          ele.textContent = String(node?.topic ?? '');
-          ele.classList.add('mm-content-node');
-          return true;
-        }
+        if (!id.startsWith('c_')) return false;
+        while (ele.firstChild) ele.removeChild(ele.firstChild);
+        ele.classList.add('mm-content-node');
+        const div = document.createElement('div');
+        div.className = 'mm-content-text';
+        div.textContent = String(node?.topic ?? '');
+        div.style.display = 'inline-block';
+        (div.style as any).whiteSpace = 'normal';
+        (div.style as any).wordBreak = 'break-word';
+        (div.style as any).overflowWrap = 'anywhere';
+        (div.style as any).textOverflow = 'clip';
+        (div.style as any).overflow = 'visible';
+        (div.style as any).boxSizing = 'border-box';
+        (div.style as any).lineHeight = '1.25';
+        (div.style as any).textAlign = 'left';
+        (div.style as any).paddingLeft = '3px';
+        // Prefer content actual width; cap at 360px
+        const MAX_W = 360;
+        // Create a hidden measuring element to avoid 0-size before layout
+        let measuredW = 0;
+        try {
+          const cs = window.getComputedStyle(ele);
+          const meas = document.createElement('div');
+          meas.textContent = div.textContent || '';
+          meas.style.position = 'absolute';
+          meas.style.left = '-10000px';
+          meas.style.top = '-10000px';
+          meas.style.visibility = 'hidden';
+          meas.style.display = 'inline-block';
+          (meas.style as any).whiteSpace = 'normal';
+          (meas.style as any).wordBreak = 'break-word';
+          (meas.style as any).overflowWrap = 'anywhere';
+          (meas.style as any).textOverflow = 'clip';
+          (meas.style as any).overflow = 'visible';
+          (meas.style as any).boxSizing = 'border-box';
+          (meas.style as any).lineHeight = (div.style as any).lineHeight || cs.lineHeight || '1.25';
+          (meas.style as any).textAlign = 'left';
+          (meas.style as any).paddingLeft = (div.style as any).paddingLeft || '3px';
+          // inherit font to match actual render width
+          (meas.style as any).font = cs.font;
+          document.body.appendChild(meas);
+          measuredW = Math.ceil(meas.scrollWidth);
+          try { document.body.removeChild(meas); } catch {}
+        } catch {}
+        // Append first, then set final width/height based on measured width
+        ele.appendChild(div);
+        try {
+          const finalW = Math.min(Math.max(measuredW, 10), MAX_W) + 14;
+          (div.style as any).width = `${finalW}px`;
+          const measuredH = Math.ceil(div.scrollHeight);
+          (div.style as any).height = `${measuredH}px`;
+        } catch {}
+        return true;
       } catch {}
       return false;
     };
@@ -1719,6 +1767,23 @@ class MindmapView extends ItemView {
           border-radius: 0 !important;
           padding-bottom: 1.5px !important;
           border-bottom: 1.5px solid var(--background-modifier-border) !important;
+          /* Multiline wrapping while keeping layout stable */
+          white-space: normal !important;
+          word-break: break-word !important;
+          overflow-wrap: anywhere !important;
+          text-overflow: clip !important;
+          overflow: visible !important;
+          display: inline-block !important;
+          box-sizing: border-box !important;
+          max-width: 60ch !important;
+          line-height: 1.25 !important;
+          text-align: left !important;
+        }
+        /* Override overflow-hidden mode to still wrap content nodes */
+        .jmnode-overflow-hidden jmnode.mm-content-node {
+          white-space: normal !important;
+          overflow: visible !important;
+          text-overflow: clip !important;
         }
         /* Preserve selected background for content nodes */
         body:not(.theme-dark) jmnodes.theme-obsidian jmnode.mm-content-node.selected,

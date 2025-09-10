@@ -1429,11 +1429,60 @@ var MindmapView = class extends import_obsidian2.ItemView {
     options.view.custom_node_render = (jm, ele, node) => {
       try {
         const id = String(node?.id ?? "");
-        if (id.startsWith("c_")) {
-          ele.textContent = String(node?.topic ?? "");
-          ele.classList.add("mm-content-node");
-          return true;
+        if (!id.startsWith("c_")) return false;
+        while (ele.firstChild) ele.removeChild(ele.firstChild);
+        ele.classList.add("mm-content-node");
+        const div = document.createElement("div");
+        div.className = "mm-content-text";
+        div.textContent = String(node?.topic ?? "");
+        div.style.display = "inline-block";
+        div.style.whiteSpace = "normal";
+        div.style.wordBreak = "break-word";
+        div.style.overflowWrap = "anywhere";
+        div.style.textOverflow = "clip";
+        div.style.overflow = "visible";
+        div.style.boxSizing = "border-box";
+        div.style.lineHeight = "1.25";
+        div.style.textAlign = "left";
+        div.style.paddingLeft = "3px";
+        const MAX_W = 360;
+        let measuredW = 0;
+        try {
+          const cs = window.getComputedStyle(ele);
+          const meas = document.createElement("div");
+          meas.textContent = div.textContent || "";
+          meas.style.position = "absolute";
+          meas.style.left = "-10000px";
+          meas.style.top = "-10000px";
+          meas.style.visibility = "hidden";
+          meas.style.display = "inline-block";
+          meas.style.whiteSpace = "normal";
+          meas.style.wordBreak = "break-word";
+          meas.style.overflowWrap = "anywhere";
+          meas.style.textOverflow = "clip";
+          meas.style.overflow = "visible";
+          meas.style.boxSizing = "border-box";
+          meas.style.lineHeight = div.style.lineHeight || cs.lineHeight || "1.25";
+          meas.style.textAlign = "left";
+          meas.style.paddingLeft = div.style.paddingLeft || "3px";
+          meas.style.font = cs.font;
+          document.body.appendChild(meas);
+          measuredW = Math.ceil(meas.scrollWidth);
+          try {
+            document.body.removeChild(meas);
+          } catch {
+          }
+        } catch {
         }
+        ele.appendChild(div);
+        try {
+          const finalW = Math.min(Math.max(measuredW, 10), MAX_W) + 14;
+          div.style.width = `${finalW}px`;
+          const measuredH = Math.ceil(div.scrollHeight);
+          div.style.height = `${measuredH}px`;
+        } catch {
+        }
+        return true;
       } catch {
       }
       return false;
@@ -2310,6 +2359,23 @@ var MindmapView = class extends import_obsidian2.ItemView {
           border-radius: 0 !important;
           padding-bottom: 1.5px !important;
           border-bottom: 1.5px solid var(--background-modifier-border) !important;
+          /* Multiline wrapping while keeping layout stable */
+          white-space: normal !important;
+          word-break: break-word !important;
+          overflow-wrap: anywhere !important;
+          text-overflow: clip !important;
+          overflow: visible !important;
+          display: inline-block !important;
+          box-sizing: border-box !important;
+          max-width: 60ch !important;
+          line-height: 1.25 !important;
+          text-align: left !important;
+        }
+        /* Override overflow-hidden mode to still wrap content nodes */
+        .jmnode-overflow-hidden jmnode.mm-content-node {
+          white-space: normal !important;
+          overflow: visible !important;
+          text-overflow: clip !important;
         }
         /* Preserve selected background for content nodes */
         body:not(.theme-dark) jmnodes.theme-obsidian jmnode.mm-content-node.selected,
