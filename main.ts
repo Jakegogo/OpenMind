@@ -89,7 +89,7 @@ function computeHeadingSections(markdownText: string): HeadingNode[] {
           raw: line + '\n' + next,
           style: 'setext',
         });
-      } else if (/^-+\s*$/.test(next)) {
+      } else if (/^-+\s*$/.test(next) && !/^\s*---\s*$/.test(next)) {
         const start = offset;
         const title = line.trim();
         const headingTextEnd = start + line.length;
@@ -625,7 +625,7 @@ class MindmapView extends ItemView {
     this.containerElDiv.empty();
     this.containerElDiv.id = 'jsmind_container';
     const themeKey: ThemeName = (this.plugin as any).settings?.theme || 'default';
-    const options = { container: 'jsmind_container', theme: getJsMindThemeNameFromSetting(themeKey), editable: true, mode: 'side', view: { engine: 'svg' ,expander_style: 'number', draggable: false }};
+    const options = { container: 'jsmind_container', theme: getJsMindThemeNameFromSetting(themeKey), editable: true, mode: 'side', view: { engine: 'svg' ,expander_style: 'number', draggable: false, line_width: 1 }};
 
     this.jm = new window.jsMind(options);
     // Wrap center_root so plugin can decide whether to allow auto-centering root

@@ -656,7 +656,7 @@ function computeHeadingSections(markdownText) {
           raw: line + "\n" + next,
           style: "setext"
         });
-      } else if (/^-+\s*$/.test(next)) {
+      } else if (/^-+\s*$/.test(next) && !/^\s*---\s*$/.test(next)) {
         const start = offset;
         const title = line.trim();
         const headingTextEnd = start + line.length;
@@ -1191,7 +1191,7 @@ var MindmapView = class extends import_obsidian2.ItemView {
     this.containerElDiv.empty();
     this.containerElDiv.id = "jsmind_container";
     const themeKey = this.plugin.settings?.theme || "default";
-    const options = { container: "jsmind_container", theme: getJsMindThemeNameFromSetting(themeKey), editable: true, mode: "side", view: { engine: "svg", expander_style: "number", draggable: false } };
+    const options = { container: "jsmind_container", theme: getJsMindThemeNameFromSetting(themeKey), editable: true, mode: "side", view: { engine: "svg", expander_style: "number", draggable: false, line_width: 1 } };
     this.jm = new window.jsMind(options);
     this.wrapCenterRootIfNeeded();
     this.allowCenterRoot = false;
