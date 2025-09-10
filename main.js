@@ -2311,6 +2311,14 @@ var MindmapView = class extends import_obsidian2.ItemView {
           padding-bottom: 1.5px !important;
           border-bottom: 1.5px solid var(--background-modifier-border) !important;
         }
+        /* Preserve selected background for content nodes */
+        body:not(.theme-dark) jmnodes.theme-obsidian jmnode.mm-content-node.selected,
+        body.theme-dark jmnodes.theme-obsidian jmnode.mm-content-node.selected,
+        jmnodes.theme-obsidian jmnode.mm-content-node.selected {
+          background: var(--interactive-accent) !important;
+          background-color: var(--interactive-accent) !important;
+          color: var(--text-on-accent) !important;
+        }
       `;
       if (!el) {
         el = document.createElement("style");
