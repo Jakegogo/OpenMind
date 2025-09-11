@@ -1475,15 +1475,12 @@ var MindmapView = class extends import_obsidian2.ItemView {
         const metaAny = node?.data?.meta ?? node?.data?.data?.meta;
         const isTask = !!(metaAny && metaAny.task);
         const isDone = !!(metaAny && metaAny.done);
-        let box = null;
         if (isTask) {
-          box = document.createElement("input");
+          const box = document.createElement("input");
           box.type = "checkbox";
           box.disabled = true;
           box.checked = !!isDone;
           box.style.margin = "0 6px 0 0";
-          box.style.display = "inline-block";
-          box.style.verticalAlign = "middle";
           ele.appendChild(box);
         }
         div.textContent = topicText;
@@ -1528,16 +1525,11 @@ var MindmapView = class extends import_obsidian2.ItemView {
         }
         ele.appendChild(div);
         try {
-          const reserve = isTask ? 20 : 0;
-          const finalW = Math.min(Math.max(measuredW, 10), MAX_W - reserve);
+          const bias = 16;
+          const finalW = Math.min(Math.max(measuredW + bias, 10), MAX_W);
           div.style.width = `${finalW}px`;
           const measuredH = Math.ceil(div.scrollHeight);
           div.style.height = `${measuredH}px`;
-          if (box) {
-            const cbH = box.offsetHeight || 16;
-            const mt = Math.max(0, Math.floor((measuredH - cbH) / 2));
-            box.style.marginTop = `${mt}px`;
-          }
         } catch {
         }
         return true;
@@ -2425,7 +2417,7 @@ var MindmapView = class extends import_obsidian2.ItemView {
           overflow: visible !important;
           display: inline-block !important;
           box-sizing: border-box !important;
-          max-width: 60ch !important;
+          /* do not constrain outer node width to characters; inner div controls width */
           line-height: 1.25 !important;
           text-align: left !important;
         }

@@ -989,7 +989,9 @@ class MindmapView extends ItemView {
         // Append first, then set final width/height based on measured width
         ele.appendChild(div);
         try {
-          const finalW = Math.min(Math.max(measuredW, 10), MAX_W) + 17;
+          // Add a small bias to account for subpixel/font rounding and checkbox
+          const bias = 16; // px
+          const finalW = Math.min(Math.max(measuredW + bias, 10), MAX_W);
           (div.style as any).width = `${finalW}px`;
           const measuredH = Math.ceil(div.scrollHeight);
           (div.style as any).height = `${measuredH}px`;
@@ -1828,7 +1830,7 @@ class MindmapView extends ItemView {
           overflow: visible !important;
           display: inline-block !important;
           box-sizing: border-box !important;
-          max-width: 60ch !important;
+          /* do not constrain outer node width to characters; inner div controls width */
           line-height: 1.25 !important;
           text-align: left !important;
         }
