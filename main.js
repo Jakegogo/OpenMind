@@ -1326,34 +1326,23 @@ var MindmapView = class extends import_obsidian2.ItemView {
     const localJsVaultPath = `${pluginBase}/vendor/jsmind/es6/jsmind.js`;
     const localCssUrl = this.app.vault.adapter.getResourcePath(localCssVaultPath);
     const localJsUrl = this.app.vault.adapter.getResourcePath(localJsVaultPath);
-    const cssId = "jsmind-css";
-    if (!document.getElementById(cssId)) {
-      const link = document.createElement("link");
-      link.id = cssId;
-      link.rel = "stylesheet";
-      link.type = "text/css";
-      link.href = localCssUrl;
-      document.head.appendChild(link);
-    }
     const fullCssId = "jsmind-css-inline-full";
-    if (!document.getElementById(fullCssId)) {
-      const cssSources = [
-        this.app.vault.adapter.getResourcePath(localCssVaultPath)
-      ];
-      for (const cssUrl of cssSources) {
-        try {
-          const res = await fetch(cssUrl);
-          const text = await res.text();
-          if (text && text.length > 1e3) {
-            const style = document.createElement("style");
-            style.id = fullCssId;
-            style.textContent = text;
-            document.head.appendChild(style);
-            break;
-          }
-        } catch {
+    try {
+      const existing = document.getElementById(fullCssId);
+      const cssUrl = this.app.vault.adapter.getResourcePath(localCssVaultPath);
+      const res = await fetch(cssUrl);
+      const text = await res.text();
+      if (text && text.length > 0) {
+        if (!existing) {
+          const style = document.createElement("style");
+          style.id = fullCssId;
+          style.textContent = text;
+          document.head.appendChild(style);
+        } else {
+          existing.textContent = text;
         }
       }
+    } catch {
     }
     const tryInject = (url) => new Promise((resolve, reject) => {
       const scriptId = `jsmind-js-${btoa(url).replace(/=/g, "")}`;
@@ -1476,7 +1465,7 @@ var MindmapView = class extends import_obsidian2.ItemView {
         }
         ele.appendChild(div);
         try {
-          const finalW = Math.min(Math.max(measuredW, 10), MAX_W) + 14;
+          const finalW = Math.min(Math.max(measuredW, 10), MAX_W) + 17;
           div.style.width = `${finalW}px`;
           const measuredH = Math.ceil(div.scrollHeight);
           div.style.height = `${measuredH}px`;

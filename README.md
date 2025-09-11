@@ -1,5 +1,25 @@
 # Mindmap Preview (jsMind) - 手动安装与使用说明
 
+## 构建
+
+### 一键构建脚本（macOS/Linux）
+
+```bash
+./build-plugin.sh
+```
+
+脚本将自动：
+- 检查 `vendor/jsmind-repo` 是否存在，不存在则执行：`git clone git@github.com:hizzgdev/jsmind.git vendor/jsmind-repo`
+- 执行 `npm run build` 构建插件
+- 将 `vendor/jsmind-repo/es6/jsmind.js` 和 `vendor/jsmind-repo/style/jsmind.css` 复制到 `vendor/jsmind/`
+
+如需单独构建 jsMind 并复制产物，可使用：
+
+```bash
+./build-jsmind.sh
+```
+
+
 ## 手动安装
 
 - 将以下文件/目录复制到你的库：`<你的库>/.obsidian/plugins/obsidian-mindmap-jsmind/`

@@ -781,36 +781,27 @@ class MindmapView extends ItemView {
     const localCssUrl = this.app.vault.adapter.getResourcePath(localCssVaultPath);
     const localJsUrl = this.app.vault.adapter.getResourcePath(localJsVaultPath);
 
-    const cssId = 'jsmind-css';
-    if (!document.getElementById(cssId)) {
-      const link = document.createElement('link');
-      link.id = cssId;
-      link.rel = 'stylesheet';
-      link.type = 'text/css';
-      link.href = localCssUrl;
-      document.head.appendChild(link);
-    }
+    // Skip <link rel="stylesheet"> to avoid CSP style-src blocking external URLs.
+    // We'll inline the full CSS content below into a <style> tag instead.
 
-    // Attempt to inline the FULL official jsMind CSS for complete styling (prefer local)
+    // Inline the FULL official jsMind CSS for complete styling (prefer local), compliant with CSP
     const fullCssId = 'jsmind-css-inline-full';
-    if (!document.getElementById(fullCssId)) {
-      const cssSources = [
-        this.app.vault.adapter.getResourcePath(localCssVaultPath),
-      ];
-      for (const cssUrl of cssSources) {
-        try {
-          const res = await fetch(cssUrl);
-          const text = await res.text();
-          if (text && text.length > 1000) {
-            const style = document.createElement('style');
-            style.id = fullCssId;
-            style.textContent = text;
-            document.head.appendChild(style);
-            break;
-          }
-        } catch {}
+    try {
+      const existing = document.getElementById(fullCssId) as HTMLStyleElement | null;
+      const cssUrl = this.app.vault.adapter.getResourcePath(localCssVaultPath);
+      const res = await fetch(cssUrl);
+      const text = await res.text();
+      if (text && text.length > 0) {
+        if (!existing) {
+          const style = document.createElement('style');
+          style.id = fullCssId;
+          style.textContent = text;
+          document.head.appendChild(style);
+        } else {
+          existing.textContent = text;
+        }
       }
-    }
+    } catch {}
 
     const tryInject = (url: string) => new Promise<void>((resolve, reject) => {
       const scriptId = `jsmind-js-${btoa(url).replace(/=/g, '')}`;
@@ -936,7 +927,7 @@ class MindmapView extends ItemView {
         // Append first, then set final width/height based on measured width
         ele.appendChild(div);
         try {
-          const finalW = Math.min(Math.max(measuredW, 10), MAX_W) + 14;
+          const finalW = Math.min(Math.max(measuredW, 10), MAX_W) + 17;
           (div.style as any).width = `${finalW}px`;
           const measuredH = Math.ceil(div.scrollHeight);
           (div.style as any).height = `${measuredH}px`;
