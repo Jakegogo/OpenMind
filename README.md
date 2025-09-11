@@ -31,17 +31,17 @@
 示例（iCloud 库路径）：
 ```bash
 mkdir -p \
-  "~/Library/Mobile Documents/iCloud~md~obsidian/Documents/个人/.obsidian/plugins/obsidian-mindmap-jsmind/vendor/jsmind/es6" \
+  "$HOME/Library/Mobile Documents/iCloud~md~obsidian/Documents/个人/.obsidian/plugins/obsidian-mindmap-jsmind/vendor/jsmind/es6" \
   "~/Library/Mobile Documents/iCloud~md~obsidian/Documents/个人/.obsidian/plugins/obsidian-mindmap-jsmind/vendor/jsmind/style"
 
 cp -f manifest.json main.js \
-  "~/Library/Mobile Documents/iCloud~md~obsidian/Documents/个人/.obsidian/plugins/obsidian-mindmap-jsmind/"
+  "$HOME/Library/Mobile Documents/iCloud~md~obsidian/Documents/个人/.obsidian/plugins/obsidian-mindmap-jsmind/"
 
 cp -f vendor/jsmind/es6/jsmind.js \
-  "~/Library/Mobile Documents/iCloud~md~obsidian/Documents/个人/.obsidian/plugins/obsidian-mindmap-jsmind/vendor/jsmind/es6/"
+  "$HOME/Library/Mobile Documents/iCloud~md~obsidian/Documents/个人/.obsidian/plugins/obsidian-mindmap-jsmind/vendor/jsmind/es6/"
 
 cp -f vendor/jsmind/style/jsmind.css \
-  "~/Library/Mobile Documents/iCloud~md~obsidian/Documents/个人/.obsidian/plugins/obsidian-mindmap-jsmind/vendor/jsmind/style/"
+  "$HOME/Library/Mobile Documents/iCloud~md~obsidian/Documents/个人/.obsidian/plugins/obsidian-mindmap-jsmind/vendor/jsmind/style/"
 ```
 
 ## 启用插件
