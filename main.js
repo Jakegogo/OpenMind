@@ -590,6 +590,13 @@ var VIEW_TYPE_MINDMAP = "obsidian-jsmind-mindmap-view";
 var __mm_lastHeadingsText = null;
 var __mm_lastHeadingsRes = null;
 var __mm_lastHeadingsTs = 0;
+function cleanEndColon(s) {
+  try {
+    return (s || "").replace(/[：:]\s*$/u, "");
+  } catch {
+    return s || "";
+  }
+}
 function extractContentTree(markdownText, start, end) {
   try {
     const lines = markdownText.split("\n");
@@ -633,12 +640,13 @@ function extractContentTree(markdownText, start, end) {
     const stack = [{ depth: -1, items: root }];
     let inCode = false;
     const BULLET = "[-*+\u2013\u2014\u2022]";
-    const RE_LIST_ITEM = new RegExp(`^(\\s*)(?:${BULLET}\\s+|\\d+\\.\\s+)(.+)$`);
+    const RE_UL_ITEM = new RegExp(`^(\\s*)${BULLET}\\s+(.+)$`);
     const RE_INLINE_BOLD = /\*\*(.+?)\*\*/;
     const RE_BOLD_LINE = /^(\s*)\*\*(.+?)\*\*[：:]?.*$/;
-    const RE_NUM_BOLD = /^(\s*)\d+\.\s*\*\*(.+?)\*\*[：:]?.*$/;
+    const RE_NUM_BOLD = /^(\s*)(\d+)\.\s*\*\*(.+?)\*\*[：:]?.*$/;
     const RE_TASK_UNCHECKED = new RegExp(`^(\\s*)${BULLET}\\s*\\[\\s\\]\\s*(.+)$`);
     const RE_TASK_CHECKED = new RegExp(`^(\\s*)${BULLET}\\s*\\[(?:x|X)\\]\\s*(.+)$`);
+    const RE_OL_ITEM = /^(\s*)(\d+)\.\s*(.+)$/;
     let structuralDepthBase = 0;
     for (let i = startLine; i <= endLine && i < lines.length; i++) {
       const raw = lines[i];
@@ -657,7 +665,9 @@ function extractContentTree(markdownText, start, end) {
         const m = raw.match(RE_NUM_BOLD);
         if (m) {
           depthSpaces = m[1].length;
-          label = (m[2] || "").trim();
+          const num = (m[2] || "").trim();
+          const txt = (m[3] || "").trim();
+          label = `${num}. ${txt}`;
         }
       }
       if (!label) {
@@ -675,15 +685,33 @@ function extractContentTree(markdownText, start, end) {
           const taskText = (m[2] || "").trim();
           const b = taskText.match(RE_INLINE_BOLD);
           label = (b ? b[1] : taskText).trim();
+          const depth2 = Math.max(Math.floor(depthSpaces / 2), structuralDepthBase);
+          while (stack.length && stack[stack.length - 1].depth >= depth2) stack.pop();
+          const container2 = stack[stack.length - 1].items;
+          const cleanedLabel2 = cleanEndColon(label);
+          const node2 = { label: cleanedLabel2, children: [], meta: { task: true, done: !!raw.match(RE_TASK_CHECKED) } };
+          container2.push(node2);
+          stack.push({ depth: depth2, items: node2.children });
+          continue;
         }
       }
       if (!label) {
-        const m = raw.match(RE_LIST_ITEM);
-        if (m) {
-          depthSpaces = m[1].length;
-          const liText = (m[2] || "").trim();
+        const mol = raw.match(RE_OL_ITEM);
+        if (mol) {
+          depthSpaces = mol[1].length;
+          const num = (mol[2] || "").trim();
+          const liText = (mol[3] || "").trim();
           const b = liText.match(RE_INLINE_BOLD);
-          label = b ? (b[1] || "").trim() : liText;
+          const core = b ? (b[1] || "").trim() : liText;
+          label = `${num}. ${core}`;
+        } else {
+          const mul = raw.match(RE_UL_ITEM);
+          if (mul) {
+            depthSpaces = mul[1].length;
+            const liText = (mul[2] || "").trim();
+            const b = liText.match(RE_INLINE_BOLD);
+            label = b ? (b[1] || "").trim() : liText;
+          }
         }
       }
       if (!label) {
@@ -710,7 +738,8 @@ function extractContentTree(markdownText, start, end) {
       }
       while (stack.length && stack[stack.length - 1].depth >= depth) stack.pop();
       const container = stack[stack.length - 1].items;
-      const node = { label, children: [] };
+      const cleanedLabel = cleanEndColon(label || "");
+      const node = { label: cleanedLabel, children: [] };
       container.push(node);
       stack.push({ depth, items: node.children });
     }
@@ -851,17 +880,17 @@ function buildJsMindTreeFromHeadings(headings, fileName) {
   let rootTopic;
   if (firstH1) {
     rootId = firstH1.id;
-    rootTopic = firstH1.title || fileName;
+    rootTopic = cleanEndColon(firstH1.title || fileName);
   } else {
     rootId = `virtual_root_${fileName}`;
-    rootTopic = fileName.replace(/\.md$/i, "");
+    rootTopic = cleanEndColon(fileName.replace(/\.md$/i, ""));
   }
   const byId = /* @__PURE__ */ new Map();
   const root = { id: rootId, topic: rootTopic, children: [] };
   byId.set(rootId, root);
   for (const h of headings) {
     if (firstH1 && h.id === firstH1.id) continue;
-    const node = { id: h.id, topic: h.title, children: [] };
+    const node = { id: h.id, topic: cleanEndColon(h.title), children: [] };
     byId.set(h.id, node);
   }
   for (const h of headings) {
@@ -878,28 +907,31 @@ function buildJsMindTreeWithContent(headings, fileName, markdownText, includeCon
   let rootTopic;
   if (firstH1) {
     rootId = firstH1.id;
-    rootTopic = firstH1.title || fileName;
+    rootTopic = cleanEndColon(firstH1.title || fileName);
   } else {
     rootId = `virtual_root_${fileName}`;
-    rootTopic = fileName.replace(/\.md$/i, "");
+    rootTopic = cleanEndColon(fileName.replace(/\.md$/i, ""));
   }
   const byId = /* @__PURE__ */ new Map();
   const root = { id: rootId, topic: rootTopic, children: [] };
   byId.set(rootId, root);
   for (const h of headings) {
     if (firstH1 && h.id === firstH1.id) continue;
-    const node = { id: h.id, topic: h.title, children: [] };
+    const node = { id: h.id, topic: cleanEndColon(h.title), children: [] };
     byId.set(h.id, node);
   }
   const contentParentMap = /* @__PURE__ */ new Map();
-  if (includeContent && headings.length === 0) {
-    const itemsTree = extractContentTree(markdownText, 0, markdownText.length);
-    let seq = 0;
+  let rootContentSeq = 0;
+  const addRootContentRange = (start, end) => {
+    const tree = extractContentTree(markdownText, start, end);
     const addChildren = (host, children) => {
       for (const child of children) {
-        seq += 1;
-        const cid = `c_${rootId}_${seq}`;
+        rootContentSeq += 1;
+        const cid = `c_${rootId}_${rootContentSeq}`;
         const cnode = { id: cid, topic: child.label, children: [] };
+        if (child.meta) {
+          cnode.data = { meta: child.meta };
+        }
         host.children.push(cnode);
         contentParentMap.set(cid, rootId);
         if (Array.isArray(child.children) && child.children.length > 0) {
@@ -907,8 +939,21 @@ function buildJsMindTreeWithContent(headings, fileName, markdownText, includeCon
         }
       }
     };
-    addChildren(root, itemsTree);
-    return { mind: { meta: { name: fileName }, format: "node_tree", data: root }, contentParentMap };
+    addChildren(root, tree);
+  };
+  if (includeContent) {
+    if (headings.length === 0) {
+      addRootContentRange(0, markdownText.length);
+      return { mind: { meta: { name: fileName }, format: "node_tree", data: root }, contentParentMap };
+    } else {
+      try {
+        const firstHeadingStart = Math.max(0, headings[0].start);
+        if (firstHeadingStart > 0) {
+          addRootContentRange(0, firstHeadingStart - 1);
+        }
+      } catch {
+      }
+    }
   }
   for (const h of headings) {
     if (firstH1 && h.id === firstH1.id) continue;
@@ -924,6 +969,9 @@ function buildJsMindTreeWithContent(headings, fileName, markdownText, includeCon
           seq += 1;
           const cid = `c_${h.id}_${seq}`;
           const cnode = { id: cid, topic: child.label, children: [] };
+          if (child.meta) {
+            cnode.data = { meta: child.meta };
+          }
           host.children.push(cnode);
           contentParentMap.set(cid, h.id);
           if (Array.isArray(child.children) && child.children.length > 0) {
@@ -1423,7 +1471,22 @@ var MindmapView = class extends import_obsidian2.ItemView {
         ele.classList.add("mm-content-node");
         const div = document.createElement("div");
         div.className = "mm-content-text";
-        div.textContent = String(node?.topic ?? "");
+        const topicText = String(node?.topic ?? "");
+        const metaAny = node?.data?.meta ?? node?.data?.data?.meta;
+        const isTask = !!(metaAny && metaAny.task);
+        const isDone = !!(metaAny && metaAny.done);
+        let box = null;
+        if (isTask) {
+          box = document.createElement("input");
+          box.type = "checkbox";
+          box.disabled = true;
+          box.checked = !!isDone;
+          box.style.margin = "0 6px 0 0";
+          box.style.display = "inline-block";
+          box.style.verticalAlign = "middle";
+          ele.appendChild(box);
+        }
+        div.textContent = topicText;
         div.style.display = "inline-block";
         div.style.whiteSpace = "normal";
         div.style.wordBreak = "break-word";
@@ -1465,10 +1528,16 @@ var MindmapView = class extends import_obsidian2.ItemView {
         }
         ele.appendChild(div);
         try {
-          const finalW = Math.min(Math.max(measuredW, 10), MAX_W) + 17;
+          const reserve = isTask ? 20 : 0;
+          const finalW = Math.min(Math.max(measuredW, 10), MAX_W - reserve);
           div.style.width = `${finalW}px`;
           const measuredH = Math.ceil(div.scrollHeight);
           div.style.height = `${measuredH}px`;
+          if (box) {
+            const cbH = box.offsetHeight || 16;
+            const mt = Math.max(0, Math.floor((measuredH - cbH) / 2));
+            box.style.marginTop = `${mt}px`;
+          }
         } catch {
         }
         return true;

@@ -28,6 +28,11 @@ let __mm_lastHeadingsText: string | null = null;
 let __mm_lastHeadingsRes: HeadingNode[] | null = null;
 let __mm_lastHeadingsTs: number = 0;
 
+// Normalize trailing colon (full/half width) from titles/labels
+function cleanEndColon(s: string): string {
+  try { return (s || '').replace(/[：:]\s*$/u, ''); } catch { return s || ''; }
+}
+
 // Extract top-level list items (ul/ol) within a range as simple content nodes (no nested structure for now)
 function extractListItems(markdownText: string, start: number, end: number): string[] {
   try {
@@ -59,7 +64,7 @@ function extractListItems(markdownText: string, start: number, end: number): str
   } catch { return []; }
 }
 
-type ContentNode = { label: string; children: ContentNode[] };
+type ContentNode = { label: string; children: ContentNode[]; meta?: { task?: boolean; done?: boolean } };
 function extractContentTree(markdownText: string, start: number, end: number): ContentNode[] {
   try {
     const lines = markdownText.split('\n');
@@ -101,12 +106,13 @@ function extractContentTree(markdownText: string, start: number, end: number): C
     let inCode = false;
     // --- Regex classes (single-purpose, easier to maintain) ---
     const BULLET = "[-*+\u2013\u2014\u2022]"; // -, *, +, en dash, em dash, bullet
-    const RE_LIST_ITEM = new RegExp(`^(\\s*)(?:${BULLET}\\s+|\\d+\\.\\s+)(.+)$`); // generic list item
+    const RE_UL_ITEM = new RegExp(`^(\\s*)${BULLET}\\s+(.+)$`); // unordered list item
     const RE_INLINE_BOLD = /\*\*(.+?)\*\*/; // inline bold anywhere
     const RE_BOLD_LINE = /^(\s*)\*\*(.+?)\*\*[：:]?.*$/; // '**Title**：...' full line
-    const RE_NUM_BOLD = /^(\s*)\d+\.\s*\*\*(.+?)\*\*[：:]?.*$/; // '1.**Title**：...'
+    const RE_NUM_BOLD = /^(\s*)(\d+)\.\s*\*\*(.+?)\*\*[：:]?.*$/; // '1.**Title**：...'
     const RE_TASK_UNCHECKED = new RegExp(`^(\\s*)${BULLET}\\s*\\[\\s\\]\\s*(.+)$`); // '- [ ] text'
     const RE_TASK_CHECKED = new RegExp(`^(\\s*)${BULLET}\\s*\\[(?:x|X)\\]\\s*(.+)$`); // '- [x] text'
+    const RE_OL_ITEM = /^(\s*)(\d+)\.\s*(.+)$/; // ordered list item (allow no space)
     // ---------------------------------------------------------
     let structuralDepthBase = 0; // 0 for none, increases after bold/italic blocks
     for (let i = startLine; i <= endLine && i < lines.length; i++) {
@@ -121,7 +127,9 @@ function extractContentTree(markdownText: string, start: number, end: number): C
         const m = raw.match(RE_NUM_BOLD);
         if (m) {
           depthSpaces = m[1].length;
-          label = (m[2] || '').trim();
+          const num = (m[2] || '').trim();
+          const txt = (m[3] || '').trim();
+          label = `${num}. ${txt}`;
         }
       }
       // 2) Bold-line start (e.g., '**预置配色方案**：...')
@@ -141,16 +149,39 @@ function extractContentTree(markdownText: string, start: number, end: number): C
           const taskText = (m[2] || '').trim();
           const b = taskText.match(RE_INLINE_BOLD);
           label = (b ? b[1] : taskText).trim();
+          // stash meta for checkbox rendering
+          // we will create the node immediately here to preserve meta,
+          // then continue to the next line
+          const depth = Math.max(Math.floor(depthSpaces / 2), structuralDepthBase);
+          while (stack.length && stack[stack.length - 1].depth >= depth) stack.pop();
+          const container = stack[stack.length - 1].items;
+          const cleanedLabel = cleanEndColon(label);
+          const node: ContentNode = { label: cleanedLabel, children: [], meta: { task: true, done: !!raw.match(RE_TASK_CHECKED) } };
+          container.push(node);
+          stack.push({ depth, items: node.children });
+          continue;
         }
       }
-      // 4) Generic list item: accept; prefer bold if present, else use full text
+      // 4) List items
       if (!label) {
-        const m = raw.match(RE_LIST_ITEM);
-        if (m) {
-          depthSpaces = m[1].length;
-          const liText = (m[2] || '').trim();
+        // Ordered list
+        const mol = raw.match(RE_OL_ITEM);
+        if (mol) {
+          depthSpaces = mol[1].length;
+          const num = (mol[2] || '').trim();
+          const liText = (mol[3] || '').trim();
           const b = liText.match(RE_INLINE_BOLD);
-          label = (b ? (b[1] || '').trim() : liText);
+          const core = (b ? (b[1] || '').trim() : liText);
+          label = `${num}. ${core}`;
+        } else {
+          // Unordered list
+          const mul = raw.match(RE_UL_ITEM);
+          if (mul) {
+            depthSpaces = mul[1].length;
+            const liText = (mul[2] || '').trim();
+            const b = liText.match(RE_INLINE_BOLD);
+            label = (b ? (b[1] || '').trim() : liText);
+          }
         }
       }
       // 5) Standalone italic blocks (optional)
@@ -174,7 +205,8 @@ function extractContentTree(markdownText: string, start: number, end: number): C
       }
       while (stack.length && stack[stack.length - 1].depth >= depth) stack.pop();
       const container = stack[stack.length - 1].items;
-      const node: ContentNode = { label, children: [] };
+      const cleanedLabel = cleanEndColon(label || '');
+      const node: ContentNode = { label: cleanedLabel, children: [] };
       container.push(node);
       stack.push({ depth, items: node.children });
     }
@@ -308,17 +340,17 @@ function buildJsMindTreeFromHeadings(headings: HeadingNode[], fileName: string) 
   let rootTopic: string;
   if (firstH1) {
     rootId = firstH1.id;
-    rootTopic = firstH1.title || fileName;
+    rootTopic = cleanEndColon(firstH1.title || fileName);
   } else {
     rootId = `virtual_root_${fileName}`;
-    rootTopic = fileName.replace(/\.md$/i, '');
+    rootTopic = cleanEndColon(fileName.replace(/\.md$/i, ''));
   }
   const byId = new Map<string, any>();
   const root: any = { id: rootId, topic: rootTopic, children: [] };
   byId.set(rootId, root);
   for (const h of headings) {
     if (firstH1 && h.id === firstH1.id) continue;
-    const node: any = { id: h.id, topic: h.title, children: [] };
+    const node: any = { id: h.id, topic: cleanEndColon(h.title), children: [] };
     byId.set(h.id, node);
   }
   for (const h of headings) {
@@ -336,29 +368,30 @@ function buildJsMindTreeWithContent(headings: HeadingNode[], fileName: string, m
   let rootTopic: string;
   if (firstH1) {
     rootId = firstH1.id;
-    rootTopic = firstH1.title || fileName;
+    rootTopic = cleanEndColon(firstH1.title || fileName);
   } else {
     rootId = `virtual_root_${fileName}`;
-    rootTopic = fileName.replace(/\.md$/i, '');
+    rootTopic = cleanEndColon(fileName.replace(/\.md$/i, ''));
   }
   const byId = new Map<string, any>();
   const root: any = { id: rootId, topic: rootTopic, children: [] };
   byId.set(rootId, root);
   for (const h of headings) {
     if (firstH1 && h.id === firstH1.id) continue;
-    const node: any = { id: h.id, topic: h.title, children: [] };
+    const node: any = { id: h.id, topic: cleanEndColon(h.title), children: [] };
     byId.set(h.id, node);
   }
   const contentParentMap = new Map<string, string>();
-  // If no headings exist, still build content tree directly under root
-  if (includeContent && headings.length === 0) {
-    const itemsTree = extractContentTree(markdownText, 0, markdownText.length);
-    let seq = 0;
+  // Helper to add content tree under root once, for a given text range
+  let rootContentSeq = 0;
+  const addRootContentRange = (start: number, end: number) => {
+    const tree = extractContentTree(markdownText, start, end);
     const addChildren = (host: any, children: any[]) => {
       for (const child of children) {
-        seq += 1;
-        const cid = `c_${rootId}_${seq}`;
+        rootContentSeq += 1;
+        const cid = `c_${rootId}_${rootContentSeq}`;
         const cnode: any = { id: cid, topic: child.label, children: [] };
+        if ((child as any).meta) { cnode.data = { meta: (child as any).meta }; }
         host.children.push(cnode);
         contentParentMap.set(cid, rootId);
         if (Array.isArray(child.children) && child.children.length > 0) {
@@ -366,8 +399,23 @@ function buildJsMindTreeWithContent(headings: HeadingNode[], fileName: string, m
         }
       }
     };
-    addChildren(root, itemsTree);
-    return { mind: { meta: { name: fileName }, format: 'node_tree', data: root }, contentParentMap };
+    addChildren(root, tree);
+  };
+
+  if (includeContent) {
+    if (headings.length === 0) {
+      // Whole-file content as root content
+      addRootContentRange(0, markdownText.length);
+      return { mind: { meta: { name: fileName }, format: 'node_tree', data: root }, contentParentMap };
+    } else {
+      // Leading content before the first heading as root content
+      try {
+        const firstHeadingStart = Math.max(0, headings[0].start);
+        if (firstHeadingStart > 0) {
+          addRootContentRange(0, firstHeadingStart - 1);
+        }
+      } catch {}
+    }
   }
   for (const h of headings) {
     if (firstH1 && h.id === firstH1.id) continue;
@@ -383,6 +431,7 @@ function buildJsMindTreeWithContent(headings: HeadingNode[], fileName: string, m
           seq += 1;
           const cid = `c_${h.id}_${seq}`;
           const cnode: any = { id: cid, topic: child.label, children: [] };
+          if ((child as any).meta) { cnode.data = { meta: (child as any).meta }; }
           host.children.push(cnode);
           contentParentMap.set(cid, h.id);
           if (Array.isArray(child.children) && child.children.length > 0) {
@@ -885,7 +934,20 @@ class MindmapView extends ItemView {
         ele.classList.add('mm-content-node');
         const div = document.createElement('div');
         div.className = 'mm-content-text';
-        div.textContent = String(node?.topic ?? '');
+        // Build content with optional checkbox prefix for task items
+        const topicText = String(node?.topic ?? '');
+        const metaAny = (node as any)?.data?.meta ?? (node as any)?.data?.data?.meta;
+        const isTask = !!(metaAny && metaAny.task);
+        const isDone = !!(metaAny && metaAny.done);
+        if (isTask) {
+          const box = document.createElement('input');
+          box.type = 'checkbox';
+          box.disabled = true;
+          box.checked = !!isDone;
+          box.style.margin = '0 6px 0 0';
+          ele.appendChild(box);
+        }
+        div.textContent = topicText;
         div.style.display = 'inline-block';
         (div.style as any).whiteSpace = 'normal';
         (div.style as any).wordBreak = 'break-word';
