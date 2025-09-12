@@ -380,3 +380,191 @@ export class ButtonController {
   }
 }
 
+
+export class ExportController {
+  containerElDiv: HTMLDivElement | null = null;
+  toolbarEl: HTMLElement | null = null;
+  jm: any | null = null;
+  app: any;
+  plugin: any;
+  file: TFile | null = null;
+  buttonEl: HTMLButtonElement | null = null;
+  menuEl: HTMLDivElement | null = null;
+
+  mount(toolbarEl: HTMLElement) {
+    try {
+      this.toolbarEl = toolbarEl;
+      if (!this.buttonEl) {
+        const btn = document.createElement('button');
+        btn.textContent = 'Export';
+        btn.title = 'Export as PNG or SVG';
+        btn.addEventListener('click', (e) => { e.stopPropagation(); this.toggleMenu(btn); });
+        toolbarEl.appendChild(btn);
+        this.buttonEl = btn;
+      }
+      // Global click to close
+      const closeOnClick = (ev: MouseEvent) => {
+        const t = ev.target as HTMLElement;
+        if (this.menuEl && this.menuEl.style.display !== 'none') {
+          if (!this.menuEl.contains(t) && t !== this.buttonEl) this.hideMenu();
+        }
+      };
+      if (!(document as any).__mm_export_close_bound) {
+        document.addEventListener('click', closeOnClick);
+        (document as any).__mm_export_close_bound = true;
+      }
+    } catch {}
+  }
+
+  private toggleMenu(anchor: HTMLElement) {
+    if (this.menuEl && this.menuEl.style.display !== 'none') { this.hideMenu(); return; }
+    this.showMenu(anchor);
+  }
+
+  private showMenu(anchor: HTMLElement) {
+    try {
+      let menu = this.menuEl;
+      if (!menu) {
+        menu = document.createElement('div');
+        menu.style.position = 'absolute';
+        menu.style.zIndex = '6';
+        menu.style.minWidth = '140px';
+        menu.style.padding = '6px';
+        menu.style.borderRadius = '6px';
+        menu.style.boxShadow = '0 8px 24px rgba(0,0,0,0.25)';
+        const isDark = document.body.classList.contains('theme-dark');
+        menu.style.setProperty('border', isDark ? '1px solid rgba(255,255,255,0.18)' : '1px solid rgba(0,0,0,0.12)', 'important');
+        menu.style.setProperty('background', isDark ? 'rgba(30,30,30,0.92)' : 'rgba(255,255,255,0.98)', 'important');
+        const mkBtn = (label: string) => {
+          const b = document.createElement('button');
+          b.textContent = label;
+          b.style.display = 'block';
+          b.style.width = '100%';
+          b.style.textAlign = 'left';
+          b.style.margin = '4px 0';
+          b.style.padding = '4px 8px';
+          b.addEventListener('click', (e) => e.stopPropagation());
+          return b;
+        };
+        const png1xBtn = mkBtn('Export PNG (1x)');
+        const png2xBtn = mkBtn('Export PNG (2x)');
+        const svgBtn = mkBtn('Export SVG');
+        png1xBtn.onclick = async () => { this.hideMenu(); await this.exportPNG(1); };
+        png2xBtn.onclick = async () => { this.hideMenu(); await this.exportPNG(2); };
+        svgBtn.onclick = async () => { this.hideMenu(); await this.exportSVG(); };
+        menu.appendChild(png1xBtn);
+        menu.appendChild(png2xBtn);
+        menu.appendChild(svgBtn);
+        (this.toolbarEl || document.body).appendChild(menu);
+        this.menuEl = menu;
+      }
+      const ar = anchor.getBoundingClientRect();
+      const root = (this.toolbarEl || document.body);
+      const hostRect = root.getBoundingClientRect ? root.getBoundingClientRect() : { left: 0, bottom: 0 } as any;
+      menu.style.left = `${ar.left - hostRect.left}px`;
+      menu.style.top = `${ar.bottom - hostRect.top + 4}px`;
+      menu.style.display = 'block';
+    } catch {}
+  }
+
+  private hideMenu() {
+    try { if (this.menuEl) this.menuEl.style.display = 'none'; } catch {}
+  }
+
+  private getDefaultFilename(ext: string): string {
+    try {
+      const base = (this.jm?.mind?.name) || (this.file?.basename) || 'mindmap';
+      const safe = String(base).replace(/[/\\:*?"<>|]+/g, '_');
+      return `${safe}.${ext}`;
+    } catch { return `mindmap.${ext}`; }
+  }
+
+  private downloadDataUrl(dataUrl: string, filename: string) {
+    try {
+      const a = document.createElement('a');
+      a.href = dataUrl;
+      (a as any).download = filename;
+      a.style.display = 'none';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+    } catch {}
+  }
+
+  private downloadText(text: string, mime: string, filename: string) {
+    try {
+      const blob = new Blob([text], { type: mime });
+      const url = URL.createObjectURL(blob);
+      this.downloadDataUrl(url, filename);
+      setTimeout(() => { try { URL.revokeObjectURL(url); } catch {} }, 0);
+    } catch {}
+  }
+
+  async exportPNG(scale: number = 1) {
+    try {
+      const jm = this.jm;
+      if (!jm) { new Notice('Mindmap not ready'); return; }
+      // Prefer built-in screenshot plugin
+      const filename = this.getDefaultFilename('png');
+      if (jm.screenshot && typeof jm.screenshot.shoot === 'function') {
+        try { if (jm.screenshot.options) jm.screenshot.options.filename = filename.replace(/\.png$/i, ''); } catch {}
+        const prevDpr = jm.screenshot.dpr ?? jm.view?.device_pixel_ratio ?? (window.devicePixelRatio || 1);
+        const s = Math.min(2, Math.max(1, scale || 1));
+        try { jm.screenshot.dpr = Math.max(1, prevDpr * s); } catch {}
+        try { jm.screenshot.shoot(); } finally {
+          // restore dpr shortly after
+          setTimeout(() => { try { jm.screenshot.dpr = prevDpr; } catch {} }, 500);
+        }
+        return;
+      }
+      // Fallback via dom-to-image on the whole panel
+      const dti = (window as any).domtoimage;
+      if (dti && jm.view?.e_panel) {
+        const node = jm.view.e_panel as HTMLElement;
+        const w = node.clientWidth;
+        const h = node.clientHeight;
+        const s = Math.min(2, Math.max(1, scale || 1));
+        const dataUrl = await dti.toPng(node, {
+          width: Math.round(w * s),
+          height: Math.round(h * s),
+          style: {
+            transform: `scale(${s})`,
+            transformOrigin: 'top left',
+            width: `${w}px`,
+            height: `${h}px`
+          }
+        });
+        this.downloadDataUrl(dataUrl, filename);
+        return;
+      }
+      new Notice('PNG export not available (screenshot plugin missing)');
+    } catch {}
+  }
+
+  async exportSVG() {
+    try {
+      const jm = this.jm;
+      if (!jm) { new Notice('Mindmap not ready'); return; }
+      const dti = (window as any).domtoimage;
+      if (!dti) { new Notice('SVG export requires dom-to-image'); return; }
+      const w = jm.view?.size?.w || this.containerElDiv?.clientWidth || 800;
+      const h = jm.view?.size?.h || this.containerElDiv?.clientHeight || 600;
+      // Serialize graph SVG
+      let graphSvg = '';
+      try { graphSvg = new XMLSerializer().serializeToString(jm.view.graph?.e_svg); } catch {}
+      const graphDataUrl = graphSvg ? `data:image/svg+xml;base64,${btoa(unescape(encodeURIComponent(graphSvg)))}` : '';
+      // Snapshot nodes to SVG data URL
+      const nodesSvgUrl: string = await dti.toSvg(jm.view.e_nodes, { style: { zoom: 1 } });
+      const svg = [
+        `<?xml version="1.0" encoding="UTF-8"?>`,
+        `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="${w}" height="${h}">`,
+        graphDataUrl ? `<image x="0" y="0" width="${w}" height="${h}" xlink:href="${graphDataUrl}" />` : '',
+        `<image x="0" y="0" width="${w}" height="${h}" xlink:href="${nodesSvgUrl}" />`,
+        `</svg>`
+      ].join('');
+      const filename = this.getDefaultFilename('svg');
+      this.downloadText(svg, 'image/svg+xml;charset=utf-8', filename);
+    } catch {}
+  }
+}
+

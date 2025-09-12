@@ -19,6 +19,12 @@ npm run build --silent
 echo "Copying jsMind artifacts..."
 cp -f "$REPO_DIR/es6/jsmind.js" "$ROOT/vendor/jsmind/es6/jsmind.js"
 cp -f "$REPO_DIR/style/jsmind.css" "$ROOT/vendor/jsmind/style/jsmind.css"
+cp -f "$REPO_DIR/es6/jsmind.screenshot.js" "$ROOT/vendor/jsmind/es6/jsmind.screenshot.js"
+mkdir -p "$ROOT/vendor/dom-to-image"
+if [ ! -f "$ROOT/vendor/dom-to-image/dom-to-image.min.js" ]; then
+  echo "Fetching dom-to-image..."
+  curl -fsSL https://unpkg.com/dom-to-image@2.6.0/dist/dom-to-image.min.js -o "$ROOT/vendor/dom-to-image/dom-to-image.min.js"
+fi
 echo "Done. Artifacts copied to vendor/jsmind/"
 
 # Optional deployment to Obsidian plugin directory when DEST is provided
@@ -29,6 +35,9 @@ if [ "${1-}" != "" ]; then
   cp -f "$ROOT/manifest.json" "$DEST/"
   cp -f "$ROOT/main.js" "$DEST/"
   cp -f "$ROOT/vendor/jsmind/es6/jsmind.js" "$DEST/vendor/jsmind/es6/"
+  cp -f "$ROOT/vendor/jsmind/es6/jsmind.screenshot.js" "$DEST/vendor/jsmind/es6/"
   cp -f "$ROOT/vendor/jsmind/style/jsmind.css" "$DEST/vendor/jsmind/style/"
+  mkdir -p "$DEST/vendor/dom-to-image"
+  cp -f "$ROOT/vendor/dom-to-image/dom-to-image.min.js" "$DEST/vendor/dom-to-image/"
   echo "Deployment completed to $DEST"
 fi

@@ -482,6 +482,233 @@ var ButtonController = class {
     this.show(nodeId);
   }
 };
+var ExportController = class {
+  constructor() {
+    this.containerElDiv = null;
+    this.toolbarEl = null;
+    this.jm = null;
+    this.file = null;
+    this.buttonEl = null;
+    this.menuEl = null;
+  }
+  mount(toolbarEl) {
+    try {
+      this.toolbarEl = toolbarEl;
+      if (!this.buttonEl) {
+        const btn = document.createElement("button");
+        btn.textContent = "Export";
+        btn.title = "Export as PNG or SVG";
+        btn.addEventListener("click", (e) => {
+          e.stopPropagation();
+          this.toggleMenu(btn);
+        });
+        toolbarEl.appendChild(btn);
+        this.buttonEl = btn;
+      }
+      const closeOnClick = (ev) => {
+        const t = ev.target;
+        if (this.menuEl && this.menuEl.style.display !== "none") {
+          if (!this.menuEl.contains(t) && t !== this.buttonEl) this.hideMenu();
+        }
+      };
+      if (!document.__mm_export_close_bound) {
+        document.addEventListener("click", closeOnClick);
+        document.__mm_export_close_bound = true;
+      }
+    } catch {
+    }
+  }
+  toggleMenu(anchor) {
+    if (this.menuEl && this.menuEl.style.display !== "none") {
+      this.hideMenu();
+      return;
+    }
+    this.showMenu(anchor);
+  }
+  showMenu(anchor) {
+    try {
+      let menu = this.menuEl;
+      if (!menu) {
+        menu = document.createElement("div");
+        menu.style.position = "absolute";
+        menu.style.zIndex = "6";
+        menu.style.minWidth = "140px";
+        menu.style.padding = "6px";
+        menu.style.borderRadius = "6px";
+        menu.style.boxShadow = "0 8px 24px rgba(0,0,0,0.25)";
+        const isDark = document.body.classList.contains("theme-dark");
+        menu.style.setProperty("border", isDark ? "1px solid rgba(255,255,255,0.18)" : "1px solid rgba(0,0,0,0.12)", "important");
+        menu.style.setProperty("background", isDark ? "rgba(30,30,30,0.92)" : "rgba(255,255,255,0.98)", "important");
+        const mkBtn = (label) => {
+          const b = document.createElement("button");
+          b.textContent = label;
+          b.style.display = "block";
+          b.style.width = "100%";
+          b.style.textAlign = "left";
+          b.style.margin = "4px 0";
+          b.style.padding = "4px 8px";
+          b.addEventListener("click", (e) => e.stopPropagation());
+          return b;
+        };
+        const png1xBtn = mkBtn("Export PNG (1x)");
+        const png2xBtn = mkBtn("Export PNG (2x)");
+        const svgBtn = mkBtn("Export SVG");
+        png1xBtn.onclick = async () => {
+          this.hideMenu();
+          await this.exportPNG(1);
+        };
+        png2xBtn.onclick = async () => {
+          this.hideMenu();
+          await this.exportPNG(2);
+        };
+        svgBtn.onclick = async () => {
+          this.hideMenu();
+          await this.exportSVG();
+        };
+        menu.appendChild(png1xBtn);
+        menu.appendChild(png2xBtn);
+        menu.appendChild(svgBtn);
+        (this.toolbarEl || document.body).appendChild(menu);
+        this.menuEl = menu;
+      }
+      const ar = anchor.getBoundingClientRect();
+      const root = this.toolbarEl || document.body;
+      const hostRect = root.getBoundingClientRect ? root.getBoundingClientRect() : { left: 0, bottom: 0 };
+      menu.style.left = `${ar.left - hostRect.left}px`;
+      menu.style.top = `${ar.bottom - hostRect.top + 4}px`;
+      menu.style.display = "block";
+    } catch {
+    }
+  }
+  hideMenu() {
+    try {
+      if (this.menuEl) this.menuEl.style.display = "none";
+    } catch {
+    }
+  }
+  getDefaultFilename(ext) {
+    try {
+      const base = this.jm?.mind?.name || this.file?.basename || "mindmap";
+      const safe = String(base).replace(/[/\\:*?"<>|]+/g, "_");
+      return `${safe}.${ext}`;
+    } catch {
+      return `mindmap.${ext}`;
+    }
+  }
+  downloadDataUrl(dataUrl, filename) {
+    try {
+      const a = document.createElement("a");
+      a.href = dataUrl;
+      a.download = filename;
+      a.style.display = "none";
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+    } catch {
+    }
+  }
+  downloadText(text, mime, filename) {
+    try {
+      const blob = new Blob([text], { type: mime });
+      const url = URL.createObjectURL(blob);
+      this.downloadDataUrl(url, filename);
+      setTimeout(() => {
+        try {
+          URL.revokeObjectURL(url);
+        } catch {
+        }
+      }, 0);
+    } catch {
+    }
+  }
+  async exportPNG(scale = 1) {
+    try {
+      const jm = this.jm;
+      if (!jm) {
+        new import_obsidian.Notice("Mindmap not ready");
+        return;
+      }
+      const filename = this.getDefaultFilename("png");
+      if (jm.screenshot && typeof jm.screenshot.shoot === "function") {
+        try {
+          if (jm.screenshot.options) jm.screenshot.options.filename = filename.replace(/\.png$/i, "");
+        } catch {
+        }
+        const prevDpr = jm.screenshot.dpr ?? jm.view?.device_pixel_ratio ?? (window.devicePixelRatio || 1);
+        const s = Math.min(2, Math.max(1, scale || 1));
+        try {
+          jm.screenshot.dpr = Math.max(1, prevDpr * s);
+        } catch {
+        }
+        try {
+          jm.screenshot.shoot();
+        } finally {
+          setTimeout(() => {
+            try {
+              jm.screenshot.dpr = prevDpr;
+            } catch {
+            }
+          }, 500);
+        }
+        return;
+      }
+      const dti = window.domtoimage;
+      if (dti && jm.view?.e_panel) {
+        const node = jm.view.e_panel;
+        const w = node.clientWidth;
+        const h = node.clientHeight;
+        const s = Math.min(2, Math.max(1, scale || 1));
+        const dataUrl = await dti.toPng(node, {
+          width: Math.round(w * s),
+          height: Math.round(h * s),
+          style: {
+            transform: `scale(${s})`,
+            transformOrigin: "top left",
+            width: `${w}px`,
+            height: `${h}px`
+          }
+        });
+        this.downloadDataUrl(dataUrl, filename);
+        return;
+      }
+      new import_obsidian.Notice("PNG export not available (screenshot plugin missing)");
+    } catch {
+    }
+  }
+  async exportSVG() {
+    try {
+      const jm = this.jm;
+      if (!jm) {
+        new import_obsidian.Notice("Mindmap not ready");
+        return;
+      }
+      const dti = window.domtoimage;
+      if (!dti) {
+        new import_obsidian.Notice("SVG export requires dom-to-image");
+        return;
+      }
+      const w = jm.view?.size?.w || this.containerElDiv?.clientWidth || 800;
+      const h = jm.view?.size?.h || this.containerElDiv?.clientHeight || 600;
+      let graphSvg = "";
+      try {
+        graphSvg = new XMLSerializer().serializeToString(jm.view.graph?.e_svg);
+      } catch {
+      }
+      const graphDataUrl = graphSvg ? `data:image/svg+xml;base64,${btoa(unescape(encodeURIComponent(graphSvg)))}` : "";
+      const nodesSvgUrl = await dti.toSvg(jm.view.e_nodes, { style: { zoom: 1 } });
+      const svg = [
+        `<?xml version="1.0" encoding="UTF-8"?>`,
+        `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="${w}" height="${h}">`,
+        graphDataUrl ? `<image x="0" y="0" width="${w}" height="${h}" xlink:href="${graphDataUrl}" />` : "",
+        `<image x="0" y="0" width="${w}" height="${h}" xlink:href="${nodesSvgUrl}" />`,
+        `</svg>`
+      ].join("");
+      const filename = this.getDefaultFilename("svg");
+      this.downloadText(svg, "image/svg+xml;charset=utf-8", filename);
+    } catch {
+    }
+  }
+};
 
 // themes.ts
 var THEME_OPTIONS = [
@@ -1030,6 +1257,7 @@ var MindmapView = class extends import_obsidian2.ItemView {
     // Controllers (OOP) for UI helpers
     this.popup = new PopupController();
     this.buttons = new ButtonController();
+    this.exporter = new ExportController();
     // Scroll sync (follow markdown scrolling)
     this.scrollSyncEl = null;
     // current scroller we listen to
@@ -1240,13 +1468,15 @@ var MindmapView = class extends import_obsidian2.ItemView {
     const toolbar = this.contentEl.createDiv({ cls: "mm-toolbar" });
     const refreshBtn = toolbar.createEl("button", { text: "Refresh" });
     const followBtn = toolbar.createEl("button", { text: "Follow Scroll" });
+    this.exporter.containerElDiv = this.containerElDiv;
+    this.exporter.mount(toolbar);
     const includeWrap = toolbar.createEl("label");
     includeWrap.style.display = "flex";
     includeWrap.style.alignItems = "center";
-    includeWrap.style.gap = "6px";
+    includeWrap.style.gap = "3px";
     const includeCb = includeWrap.createEl("input", { type: "checkbox" });
     includeCb.checked = !!this.plugin.settings?.includeContent;
-    includeWrap.createSpan({ text: "Include content (ul/ol)" });
+    includeWrap.createSpan({ text: "Include content" });
     const container = this.contentEl.createDiv();
     container.id = "jsmind_container";
     container.style.width = "100%";
@@ -1283,6 +1513,10 @@ var MindmapView = class extends import_obsidian2.ItemView {
     await this.refresh();
     this.popup.jm = this.jm;
     this.buttons.jm = this.jm;
+    this.exporter.jm = this.jm;
+    this.exporter.app = this.app;
+    this.exporter.plugin = this.plugin;
+    this.exporter.file = this.file || null;
     try {
       const ro = new ResizeObserver(() => {
         if (this.jm) {
@@ -1368,12 +1602,15 @@ var MindmapView = class extends import_obsidian2.ItemView {
     this.containerElDiv = null;
   }
   async ensureJsMindLoaded(useFallback = false) {
-    if (window.jsMind) return;
     const pluginBase = `${this.app.vault.configDir}/plugins/obsidian-mindmap-jsmind`;
     const localCssVaultPath = `${pluginBase}/vendor/jsmind/style/jsmind.css`;
     const localJsVaultPath = `${pluginBase}/vendor/jsmind/es6/jsmind.js`;
+    const legacyScreenshotVaultPath = `${pluginBase}/vendor/jsmind/es6/jsmind.screenshot.js`;
+    const domToImageVaultPath = `${pluginBase}/vendor/dom-to-image/dom-to-image.min.js`;
     const localCssUrl = this.app.vault.adapter.getResourcePath(localCssVaultPath);
     const localJsUrl = this.app.vault.adapter.getResourcePath(localJsVaultPath);
+    const domToImageUrl = this.app.vault.adapter.getResourcePath(domToImageVaultPath);
+    const legacyScreenshotUrl = this.app.vault.adapter.getResourcePath(legacyScreenshotVaultPath);
     const fullCssId = "jsmind-css-inline-full";
     try {
       const existing = document.getElementById(fullCssId);
@@ -1408,20 +1645,55 @@ var MindmapView = class extends import_obsidian2.ItemView {
     });
     const localSrc = localJsUrl;
     try {
-      await tryInject(localSrc);
-      if (window.jsMind) return;
+      if (!window.jsMind) {
+        await tryInject(localSrc);
+      }
     } catch {
     }
     try {
-      const jsRes = await fetch(localJsUrl);
-      const jsText = await jsRes.text();
-      const script = document.createElement("script");
-      script.text = jsText;
-      document.head.appendChild(script);
-      if (window.jsMind) return;
+      if (!window.jsMind) {
+        const jsRes = await fetch(localJsUrl);
+        const jsText = await jsRes.text();
+        const script = document.createElement("script");
+        script.text = jsText;
+        document.head.appendChild(script);
+      }
     } catch {
     }
-    throw new Error("Unable to load jsMind");
+    if (!window.jsMind) throw new Error("Unable to load jsMind");
+    if (!window.domtoimage) {
+      try {
+        const res = await fetch(domToImageUrl);
+        const txt = await res.text();
+        const s = document.createElement("script");
+        s.text = `;(function(g){ var module; var exports; var define; (function(){ ${txt}
+ }).call(g); })(window);`;
+        document.head.appendChild(s);
+      } catch {
+        try {
+          await tryInject(domToImageUrl);
+        } catch {
+        }
+      }
+    }
+    const pluginScriptId = "jsmind-screenshot-plugin";
+    if (!document.getElementById(pluginScriptId)) {
+      try {
+        await tryInject(legacyScreenshotUrl);
+        const tag = document.getElementById(`jsmind-js-${btoa(legacyScreenshotUrl).replace(/=/g, "")}`);
+        if (tag) tag.id = pluginScriptId;
+      } catch {
+        try {
+          const res = await fetch(legacyScreenshotUrl);
+          const txt = await res.text();
+          const s = document.createElement("script");
+          s.id = pluginScriptId;
+          s.text = txt;
+          document.head.appendChild(s);
+        } catch {
+        }
+      }
+    }
   }
   async refresh() {
     if (!this.file) {
@@ -1551,6 +1823,15 @@ var MindmapView = class extends import_obsidian2.ItemView {
     this.allowCenterRoot = false;
     this.jm.show(mind);
     try {
+      this.popup.jm = this.jm;
+      this.buttons.jm = this.jm;
+      this.exporter.jm = this.jm;
+      this.popup.file = this.file;
+      this.buttons.file = this.file;
+      this.exporter.file = this.file;
+    } catch {
+    }
+    try {
       ensureThemeCssInjected(document);
     } catch {
     }
@@ -1586,6 +1867,13 @@ var MindmapView = class extends import_obsidian2.ItemView {
     }
     try {
       this.jm.resize && this.jm.resize();
+    } catch {
+    }
+    try {
+      if (this.jm.screenshot && this.jm.screenshot.options && this.file?.name) {
+        const base = (this.file.name || "").replace(/\.[^.]+$/, "");
+        this.jm.screenshot.options.filename = base;
+      }
     } catch {
     }
     try {

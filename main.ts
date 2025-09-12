@@ -1,5 +1,5 @@
 import { App, Editor, ItemView, MarkdownView, Notice, Plugin, PluginSettingTab, Setting, TFile, WorkspaceLeaf, requestUrl, MarkdownRenderer } from 'obsidian';
-import { PopupController, ButtonController } from './tools';
+import { PopupController, ButtonController, ExportController } from './tools';
 import { ensureThemeCssInjected, getJsMindThemeNameFromSetting, THEME_OPTIONS, ThemeName } from './themes';
 
 declare global {
@@ -485,6 +485,7 @@ class MindmapView extends ItemView {
   // Controllers (OOP) for UI helpers
   private popup: PopupController = new PopupController();
   private buttons: ButtonController = new ButtonController();
+  private exporter: ExportController = new ExportController();
   private enterScroll() { 
     if (this.syncState === 'preview') return;
     if (this.syncState === 'edit') return;
@@ -679,6 +680,10 @@ class MindmapView extends ItemView {
     const toolbar = this.contentEl.createDiv({ cls: 'mm-toolbar' });
     const refreshBtn = toolbar.createEl('button', { text: 'Refresh' });
     const followBtn = toolbar.createEl('button', { text: 'Follow Scroll' });
+    // Mount exporter before include toggle
+    this.exporter.containerElDiv = this.containerElDiv;
+    this.exporter.mount(toolbar);
+
     // Include content toggle (ul/ol as content nodes)
     const includeWrap = toolbar.createEl('label');
     includeWrap.style.display = 'flex';
@@ -686,7 +691,7 @@ class MindmapView extends ItemView {
     includeWrap.style.gap = '6px';
     const includeCb = includeWrap.createEl('input', { type: 'checkbox' });
     includeCb.checked = !!((this.plugin as any).settings?.includeContent);
-    includeWrap.createSpan({ text: 'Include content (ul/ol)' });
+    includeWrap.createSpan({ text: 'Include content' });
 
     const container = this.contentEl.createDiv();
     container.id = 'jsmind_container';
@@ -699,6 +704,7 @@ class MindmapView extends ItemView {
     // wire DOM into controllers
     this.popup.containerElDiv = this.containerElDiv;
     this.buttons.containerElDiv = this.containerElDiv;
+    // exporter already mounted above
     refreshBtn.addEventListener('click', () => this.refresh());
     followBtn.addEventListener('click', () => {
       // Follow is now purely based on active view + setting; nothing to toggle here
@@ -729,6 +735,10 @@ class MindmapView extends ItemView {
     // after refresh, jm exists; propagate instance
     this.popup.jm = this.jm;
     this.buttons.jm = this.jm;
+    this.exporter.jm = this.jm;
+    this.exporter.app = this.app;
+    (this.exporter as any).plugin = this.plugin;
+    this.exporter.file = this.file || null;
 
     // Observe size changes for reliable canvas resizing
     try {
@@ -823,12 +833,15 @@ class MindmapView extends ItemView {
   }
 
   private async ensureJsMindLoaded(useFallback: boolean = false): Promise<void> {
-    if (window.jsMind) return;
     const pluginBase = `${this.app.vault.configDir}/plugins/obsidian-mindmap-jsmind`;
     const localCssVaultPath = `${pluginBase}/vendor/jsmind/style/jsmind.css`;
     const localJsVaultPath = `${pluginBase}/vendor/jsmind/es6/jsmind.js`;
+    const legacyScreenshotVaultPath = `${pluginBase}/vendor/jsmind/es6/jsmind.screenshot.js`;
+    const domToImageVaultPath = `${pluginBase}/vendor/dom-to-image/dom-to-image.min.js`;
     const localCssUrl = this.app.vault.adapter.getResourcePath(localCssVaultPath);
     const localJsUrl = this.app.vault.adapter.getResourcePath(localJsVaultPath);
+    const domToImageUrl = this.app.vault.adapter.getResourcePath(domToImageVaultPath);
+    const legacyScreenshotUrl = this.app.vault.adapter.getResourcePath(legacyScreenshotVaultPath);
 
     // Skip <link rel="stylesheet"> to avoid CSP style-src blocking external URLs.
     // We'll inline the full CSS content below into a <style> tag instead.
@@ -870,20 +883,56 @@ class MindmapView extends ItemView {
     // Prefer local vendored JS
     const localSrc = localJsUrl;
     try {
-      await tryInject(localSrc);
-      if (window.jsMind) return;
+      if (!window.jsMind) {
+        await tryInject(localSrc);
+      }
     } catch {}
 
     // Last-resort: try reading local JS text and eval if inject failed
     try {
-      const jsRes = await fetch(localJsUrl);
-      const jsText = await jsRes.text();
-      const script = document.createElement('script');
-      script.text = jsText;
-      document.head.appendChild(script);
-      if (window.jsMind) return;
+      if (!window.jsMind) {
+        const jsRes = await fetch(localJsUrl);
+        const jsText = await jsRes.text();
+        const script = document.createElement('script');
+        script.text = jsText;
+        document.head.appendChild(script);
+      }
     } catch {}
-    throw new Error('Unable to load jsMind');
+
+    if (!window.jsMind) throw new Error('Unable to load jsMind');
+
+    // Ensure dom-to-image is available before loading ES6 screenshot plugin.
+    // Force global resolution by neutralizing CommonJS/AMD during evaluation if needed.
+    if (!(window as any).domtoimage) {
+      try {
+        const res = await fetch(domToImageUrl);
+        const txt = await res.text();
+        const s = document.createElement('script');
+        s.text = `;(function(g){ var module; var exports; var define; (function(){ ${txt}\n }).call(g); })(window);`;
+        document.head.appendChild(s);
+      } catch {
+        try { await tryInject(domToImageUrl); } catch {}
+      }
+    }
+
+    // Inject screenshot plugin (ES6 build requires dom-to-image)
+    const pluginScriptId = 'jsmind-screenshot-plugin';
+    if (!document.getElementById(pluginScriptId)) {
+      try {
+        await tryInject(legacyScreenshotUrl);
+        const tag = document.getElementById(`jsmind-js-${btoa(legacyScreenshotUrl).replace(/=/g, '')}`);
+        if (tag) tag.id = pluginScriptId;
+      } catch {
+        try {
+          const res = await fetch(legacyScreenshotUrl);
+          const txt = await res.text();
+          const s = document.createElement('script');
+          s.id = pluginScriptId;
+          s.text = txt;
+          document.head.appendChild(s);
+        } catch {}
+      }
+    }
   }
 
   private async refresh() {
@@ -1018,6 +1067,15 @@ class MindmapView extends ItemView {
     // By default,禁止居中根节点（例如首次 show 或 refresh 时）
     this.allowCenterRoot = false;
     this.jm.show(mind);
+    // Rebind controllers to the current jsMind instance and file after rebuild
+    try {
+      this.popup.jm = this.jm;
+      this.buttons.jm = this.jm;
+      this.exporter.jm = this.jm;
+      this.popup.file = this.file;
+      this.buttons.file = this.file;
+      this.exporter.file = this.file;
+    } catch {}
     // Re-inject themes CSS after render to ensure it is last in head
     try { ensureThemeCssInjected(document); } catch {}
     // Inject override CSS again so it stays after theme CSS
@@ -1043,6 +1101,13 @@ class MindmapView extends ItemView {
       }
     } catch {}
     try { this.jm.resize && this.jm.resize(); } catch {}
+    // Ensure screenshot plugin options carry correct filename base after file switch
+    try {
+      if ((this.jm as any).screenshot && (this.jm as any).screenshot.options && this.file?.name) {
+        const base = (this.file.name || '').replace(/\.[^.]+$/,'');
+        (this.jm as any).screenshot.options.filename = base;
+      }
+    } catch {}
     try { ensureThemeCssInjected(document); } catch {}
     try { this.injectContentNodeOverrideCss(); } catch {}
 
