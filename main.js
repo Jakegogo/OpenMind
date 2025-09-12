@@ -1491,9 +1491,10 @@ var MindmapView = class extends import_obsidian2.ItemView {
         div.style.textOverflow = "clip";
         div.style.overflow = "visible";
         div.style.boxSizing = "border-box";
-        div.style.lineHeight = "1.25";
+        div.style.lineHeight = "1.5";
         div.style.textAlign = "left";
-        div.style.paddingLeft = "3px";
+        div.style.paddingLeft = "0px";
+        div.style.paddingRight = "0px";
         const MAX_W = 360;
         let measuredW = 0;
         try {
@@ -1511,11 +1512,16 @@ var MindmapView = class extends import_obsidian2.ItemView {
           meas.style.textOverflow = "clip";
           meas.style.overflow = "visible";
           meas.style.boxSizing = "border-box";
-          meas.style.lineHeight = div.style.lineHeight || cs.lineHeight || "1.25";
           meas.style.textAlign = "left";
-          meas.style.paddingLeft = div.style.paddingLeft || "3px";
-          meas.style.font = cs.font;
+          meas.style.font = cs.font || "300 1em/1.5 'PingFang SC', 'Lantinghei SC', 'Microsoft Yahei', 'Hiragino Sans GB', 'Microsoft Sans Serif', 'WenQuanYi Micro Hei', 'sans'";
+          meas.style.fontSize = cs.fontSize || "16px";
           document.body.appendChild(meas);
+          meas.style.lineHeight = div.style.lineHeight || cs.lineHeight || "1.5";
+          meas.style.fontWeight = div.style.fontWeight || cs.fontWeight || "normal";
+          meas.style.paddingLeft = div.style.paddingLeft || cs.paddingLeft || "3px";
+          meas.style.paddingRight = div.style.paddingRight || cs.paddingRight || "3px";
+          meas.style.marginLeft = div.style.marginLeft || cs.marginLeft;
+          meas.style.marginRight = div.style.marginRight || cs.marginRight;
           measuredW = Math.ceil(meas.scrollWidth);
           try {
             document.body.removeChild(meas);
@@ -1525,7 +1531,10 @@ var MindmapView = class extends import_obsidian2.ItemView {
         }
         ele.appendChild(div);
         try {
-          const bias = 16;
+          let bias = 6;
+          if (isTask) {
+            bias += 20;
+          }
           const finalW = Math.min(Math.max(measuredW + bias, 10), MAX_W);
           div.style.width = `${finalW}px`;
           const measuredH = Math.ceil(div.scrollHeight);
@@ -2418,14 +2427,16 @@ var MindmapView = class extends import_obsidian2.ItemView {
           display: inline-block !important;
           box-sizing: border-box !important;
           /* do not constrain outer node width to characters; inner div controls width */
-          line-height: 1.25 !important;
+          line-height: 1.5 !important;
           text-align: left !important;
+          font: 300 1em/1.5 'PingFang SC', 'Lantinghei SC', 'Microsoft Yahei', 'Hiragino Sans GB', 'Microsoft Sans Serif', 'WenQuanYi Micro Hei', 'sans';
         }
         /* Override overflow-hidden mode to still wrap content nodes */
         .jmnode-overflow-hidden jmnode.mm-content-node {
           white-space: normal !important;
           overflow: visible !important;
           text-overflow: clip !important;
+          font: 300 1em/1.5 'PingFang SC', 'Lantinghei SC', 'Microsoft Yahei', 'Hiragino Sans GB', 'Microsoft Sans Serif', 'WenQuanYi Micro Hei', 'sans';
         }
         /* Preserve selected background for content nodes */
         body:not(.theme-dark) jmnodes.theme-obsidian jmnode.mm-content-node.selected,
@@ -2434,6 +2445,17 @@ var MindmapView = class extends import_obsidian2.ItemView {
           background: var(--interactive-accent) !important;
           background-color: var(--interactive-accent) !important;
           color: var(--text-on-accent) !important;
+          font: 300 1em/1.5 'PingFang SC', 'Lantinghei SC', 'Microsoft Yahei', 'Hiragino Sans GB', 'Microsoft Sans Serif', 'WenQuanYi Micro Hei', 'sans';
+        }
+        jmnode.mm-content-node textarea {
+          border: none !important;
+          box-shadow: none !important;
+          border-radius: 0 !important;
+          padding: 0 !important;
+          margin: -2px !important;
+          line-height: 1.5 !important;
+          text-align: left !important;
+          font: 300 1em/1.5 'PingFang SC', 'Lantinghei SC', 'Microsoft Yahei', 'Hiragino Sans GB', 'Microsoft Sans Serif', 'WenQuanYi Micro Hei', 'sans';
         }
       `;
       if (!el) {

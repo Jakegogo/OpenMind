@@ -955,9 +955,10 @@ class MindmapView extends ItemView {
         (div.style as any).textOverflow = 'clip';
         (div.style as any).overflow = 'visible';
         (div.style as any).boxSizing = 'border-box';
-        (div.style as any).lineHeight = '1.25';
+        (div.style as any).lineHeight = '1.5';
         (div.style as any).textAlign = 'left';
-        (div.style as any).paddingLeft = '3px';
+        (div.style as any).paddingLeft = '0px';
+        (div.style as any).paddingRight = '0px';
         // Prefer content actual width; cap at 360px
         const MAX_W = 360;
         // Create a hidden measuring element to avoid 0-size before layout
@@ -977,12 +978,19 @@ class MindmapView extends ItemView {
           (meas.style as any).textOverflow = 'clip';
           (meas.style as any).overflow = 'visible';
           (meas.style as any).boxSizing = 'border-box';
-          (meas.style as any).lineHeight = (div.style as any).lineHeight || cs.lineHeight || '1.25';
           (meas.style as any).textAlign = 'left';
-          (meas.style as any).paddingLeft = (div.style as any).paddingLeft || '3px';
+          
           // inherit font to match actual render width
-          (meas.style as any).font = cs.font;
+          (meas.style as any).font = cs.font || "300 1em/1.5 'PingFang SC', 'Lantinghei SC', 'Microsoft Yahei', 'Hiragino Sans GB', 'Microsoft Sans Serif', 'WenQuanYi Micro Hei', 'sans'";
+          (meas.style as any).fontSize = cs.fontSize || '16px';
           document.body.appendChild(meas);
+          (meas.style as any).lineHeight = (div.style as any).lineHeight || cs.lineHeight || '1.5';
+          
+          (meas.style as any).fontWeight = (div.style as any).fontWeight || cs.fontWeight || 'normal' ;
+          (meas.style as any).paddingLeft = (div.style as any).paddingLeft || cs.paddingLeft || '3px';
+          (meas.style as any).paddingRight = (div.style as any).paddingRight || cs.paddingRight || '3px';
+          (meas.style as any).marginLeft = (div.style as any).marginLeft || cs.marginLeft;
+          (meas.style as any).marginRight = (div.style as any).marginRight || cs.marginRight;
           measuredW = Math.ceil(meas.scrollWidth);
           try { document.body.removeChild(meas); } catch {}
         } catch {}
@@ -990,7 +998,10 @@ class MindmapView extends ItemView {
         ele.appendChild(div);
         try {
           // Add a small bias to account for subpixel/font rounding and checkbox
-          const bias = 16; // px
+          let bias = 6; // px
+          if (isTask) {
+            bias += 20;
+          }
           const finalW = Math.min(Math.max(measuredW + bias, 10), MAX_W);
           (div.style as any).width = `${finalW}px`;
           const measuredH = Math.ceil(div.scrollHeight);
@@ -1831,14 +1842,16 @@ class MindmapView extends ItemView {
           display: inline-block !important;
           box-sizing: border-box !important;
           /* do not constrain outer node width to characters; inner div controls width */
-          line-height: 1.25 !important;
+          line-height: 1.5 !important;
           text-align: left !important;
+          font: 300 1em/1.5 'PingFang SC', 'Lantinghei SC', 'Microsoft Yahei', 'Hiragino Sans GB', 'Microsoft Sans Serif', 'WenQuanYi Micro Hei', 'sans';
         }
         /* Override overflow-hidden mode to still wrap content nodes */
         .jmnode-overflow-hidden jmnode.mm-content-node {
           white-space: normal !important;
           overflow: visible !important;
           text-overflow: clip !important;
+          font: 300 1em/1.5 'PingFang SC', 'Lantinghei SC', 'Microsoft Yahei', 'Hiragino Sans GB', 'Microsoft Sans Serif', 'WenQuanYi Micro Hei', 'sans';
         }
         /* Preserve selected background for content nodes */
         body:not(.theme-dark) jmnodes.theme-obsidian jmnode.mm-content-node.selected,
@@ -1847,6 +1860,17 @@ class MindmapView extends ItemView {
           background: var(--interactive-accent) !important;
           background-color: var(--interactive-accent) !important;
           color: var(--text-on-accent) !important;
+          font: 300 1em/1.5 'PingFang SC', 'Lantinghei SC', 'Microsoft Yahei', 'Hiragino Sans GB', 'Microsoft Sans Serif', 'WenQuanYi Micro Hei', 'sans';
+        }
+        jmnode.mm-content-node textarea {
+          border: none !important;
+          box-shadow: none !important;
+          border-radius: 0 !important;
+          padding: 0 !important;
+          margin: -2px !important;
+          line-height: 1.5 !important;
+          text-align: left !important;
+          font: 300 1em/1.5 'PingFang SC', 'Lantinghei SC', 'Microsoft Yahei', 'Hiragino Sans GB', 'Microsoft Sans Serif', 'WenQuanYi Micro Hei', 'sans';
         }
       `;
       if (!el) {
