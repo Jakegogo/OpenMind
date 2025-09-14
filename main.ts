@@ -1932,9 +1932,13 @@ class MindmapView extends ItemView {
           box-shadow: none !important;
           border-radius: 0 !important;
           padding: 0 !important;
-          margin: -2px !important;
+          margin-left: -2px !important;
+          margin-right: -2px !important;
           line-height: 1.5 !important;
           text-align: left !important;
+          min-height: 1.5em !important;
+          display: block !important;
+          box-sizing: border-box !important;
           font: 300 1em/1.5 'PingFang SC', 'Lantinghei SC', 'Microsoft Yahei', 'Hiragino Sans GB', 'Microsoft Sans Serif', 'WenQuanYi Micro Hei', 'sans';
         }
       `;

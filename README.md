@@ -26,7 +26,9 @@
   - `manifest.json`
   - `main.js`
   - `vendor/jsmind/es6/jsmind.js`
+  - `vendor/jsmind/es6/jsmind.screenshot.js`
   - `vendor/jsmind/style/jsmind.css`
+  - `vendor/dom-to-image/dom-to-image.min.js`
 
 示例（iCloud 库路径）：
 ```bash

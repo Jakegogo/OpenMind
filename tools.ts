@@ -545,23 +545,254 @@ export class ExportController {
     try {
       const jm = this.jm;
       if (!jm) { new Notice('Mindmap not ready'); return; }
-      const dti = (window as any).domtoimage;
-      if (!dti) { new Notice('SVG export requires dom-to-image'); return; }
       const w = jm.view?.size?.w || this.containerElDiv?.clientWidth || 800;
       const h = jm.view?.size?.h || this.containerElDiv?.clientHeight || 600;
-      // Serialize graph SVG
+
+      // 1) Serialize graph (edges) as pure SVG
       let graphSvg = '';
-      try { graphSvg = new XMLSerializer().serializeToString(jm.view.graph?.e_svg); } catch {}
-      const graphDataUrl = graphSvg ? `data:image/svg+xml;base64,${btoa(unescape(encodeURIComponent(graphSvg)))}` : '';
-      // Snapshot nodes to SVG data URL
-      const nodesSvgUrl: string = await dti.toSvg(jm.view.e_nodes, { style: { zoom: 1 } });
+      try {
+        const eSvg = jm.view.graph?.e_svg as SVGSVGElement | undefined;
+        if (eSvg) {
+          // Clone to avoid mutating DOM, then serialize
+          const clone = eSvg.cloneNode(true) as SVGSVGElement;
+          // Remove width/height on inner to let outer control layout
+          clone.removeAttribute('width');
+          clone.removeAttribute('height');
+          graphSvg = new XMLSerializer().serializeToString(clone);
+        }
+      } catch {}
+
+      // 2) Serialize nodes as pure SVG text (no foreignObject, no raster)
+      const nodesContainer = jm.view?.e_nodes as HTMLElement | undefined;
+      const escAttr = (s: string) => s
+        .replace(/&/g, '&amp;')
+        .replace(/"/g, '&quot;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
+      let nodesTransform = '';
+      let nodesGroup = '';
+      if (nodesContainer) {
+        try {
+          const cs = getComputedStyle(nodesContainer);
+          const t = cs.transform && cs.transform !== 'none' ? cs.transform : '';
+          if (t) nodesTransform = t;
+        } catch {}
+        const parts: string[] = [];
+        // Prepare a canvas context for text measurement
+        const measureCanvas = document.createElement('canvas');
+        const measureCtx = measureCanvas.getContext('2d');
+        const escapeXml = (s: string) => s
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;');
+        const escapeXmlAttr = (s: string) => s
+          .replace(/&/g, '&amp;')
+          .replace(/"/g, '&quot;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;');
+        const parsePx = (v: string, fallback: number): number => {
+          const n = parseFloat(v || '');
+          return Number.isFinite(n) ? n : fallback;
+        };
+        const computeLineHeightPx = (csNode: CSSStyleDeclaration, fontSizePx: number): number => {
+          const lh = csNode.lineHeight;
+          if (!lh || lh === 'normal') return Math.round(fontSizePx * 1.2);
+          if (lh.endsWith('px')) return parsePx(lh, Math.round(fontSizePx * 1.2));
+          const num = parseFloat(lh);
+          if (Number.isFinite(num)) return Math.round(fontSizePx * num);
+          return Math.round(fontSizePx * 1.2);
+        };
+        const buildFontForMeasure = (csNode: CSSStyleDeclaration): { font: string; fontSizePx: number; fontWeight: string; fontStyle: string; fontFamily: string } => {
+          const fontStyle = csNode.fontStyle || 'normal';
+          const fontVariant = csNode.fontVariant || 'normal';
+          const fontWeight = csNode.fontWeight || '400';
+          const fontSize = csNode.fontSize || '16px';
+          const fontFamilyRaw = csNode.fontFamily || 'sans-serif';
+          const fontFamily = fontFamilyRaw.replace(/["']/g, ''); // remove quotes for XML attr safety
+          const font = `${fontStyle} ${fontVariant} ${fontWeight} ${fontSize} ${fontFamily}`;
+          const fontSizePx = parsePx(fontSize, 16);
+          return { font, fontSizePx, fontWeight, fontStyle, fontFamily };
+        };
+        const measureWrappedLines = (text: string, maxWidth: number, ctx: CanvasRenderingContext2D, csNode: CSSStyleDeclaration) => {
+          ctx.save();
+          const { font } = buildFontForMeasure(csNode);
+          ctx.font = font;
+          // Break on explicit newlines first
+          const rawLines = text.replace(/\r\n?/g, '\n').split('\n');
+          const lines: string[] = [];
+          const hasWhitespace = (s: string) => /\s/.test(s);
+          const takeFittingPrefix = (base: string, token: string): { fitted: string; rest: string } => {
+            let fitted = '';
+            for (const ch of token) {
+              const w = ctx.measureText(base + fitted + ch).width;
+              if (w <= maxWidth || (base.length === 0 && fitted.length === 0)) {
+                fitted += ch;
+              } else {
+                break;
+              }
+            }
+            return { fitted, rest: token.slice(fitted.length) };
+          };
+          for (const raw of rawLines) {
+            const words = raw.split(/(\s+)/); // keep spaces tokens
+            let current = '';
+            for (const token of words) {
+              const tentative = current + token;
+              const width = ctx.measureText(tentative).width;
+              if (width <= maxWidth || current.length === 0) {
+                current = tentative;
+                continue;
+              }
+              // If token itself is too long (no spaces case), fallback to character wrap
+              if (!hasWhitespace(token)) {
+                // Prefer to fill the remaining space of current line with part of this long token
+                const { fitted, rest } = takeFittingPrefix(current, token);
+                if (fitted.length > 0) {
+                  lines.push((current + fitted).trimEnd());
+                  // Now wrap the rest by characters across subsequent lines
+                  let remaining = rest;
+                  current = '';
+                  while (remaining.length > 0) {
+                    const { fitted: part, rest: next } = takeFittingPrefix('', remaining);
+                    if (part.length === 0) break;
+                    if (ctx.measureText(part).width <= maxWidth) {
+                      // If this is the last small part, keep it in current for next tokens
+                      remaining = next;
+                      if (remaining.length === 0) {
+                        current = part;
+                        break;
+                      }
+                      lines.push(part);
+                    } else {
+                      lines.push(part);
+                      remaining = next;
+                    }
+                  }
+                } else {
+                  // Cannot fit any part with current; push current and start wrapping token
+                  lines.push(current.trimEnd());
+                  let remaining = token;
+                  current = '';
+                  while (remaining.length > 0) {
+                    const { fitted: part, rest: next } = takeFittingPrefix('', remaining);
+                    if (part.length === 0) break;
+                    if (ctx.measureText(part).width <= maxWidth && next.length === 0) {
+                      current = part;
+                      remaining = next;
+                      break;
+                    } else {
+                      lines.push(part);
+                      remaining = next;
+                    }
+                  }
+                }
+              } else {
+                lines.push(current.trimEnd());
+                current = token.trimStart();
+              }
+            }
+            if (current) lines.push(current.trimEnd());
+          }
+          // Final safety pass: ensure no line width exceeds maxWidth due to rounding
+          const safeMax = Math.max(1, maxWidth - 2); // 2px safety to avoid overflow
+          const hardWrapped: string[] = [];
+          for (const ln of lines) {
+            let current = '';
+            for (const ch of ln) {
+              const w = ctx.measureText(current + ch).width;
+              if (w <= safeMax || current.length === 0) {
+                current += ch;
+              } else {
+                hardWrapped.push(current.trimEnd());
+                current = ch.trimStart();
+              }
+            }
+            if (current) hardWrapped.push(current.trimEnd());
+          }
+          ctx.restore();
+          return hardWrapped;
+        };
+        const nodeList = Array.from(nodesContainer.querySelectorAll('jmnode')) as HTMLElement[];
+        for (const nodeEl of nodeList) {
+          try {
+            const x = nodeEl.offsetLeft;
+            const y = nodeEl.offsetTop;
+            const width = Math.max(1, nodeEl.clientWidth);
+            const height = Math.max(1, nodeEl.clientHeight);
+            const csNode = getComputedStyle(nodeEl);
+            const padL = parsePx(csNode.paddingLeft, 0);
+            const padT = parsePx(csNode.paddingTop, 0);
+            const padR = parsePx(csNode.paddingRight, 0);
+            // Background rectangle if visible
+            const bg = csNode.backgroundColor;
+            const hasBg = bg && bg !== 'transparent' && !/rgba\(0,\s*0,\s*0,\s*0\)/i.test(bg);
+            if (hasBg) {
+              parts.push(`<rect x="${x}" y="${y}" width="${width}" height="${height}" fill="${bg}" rx="${parsePx(csNode.borderTopLeftRadius, 0)}" ry="${parsePx(csNode.borderTopLeftRadius, 0)}"/>`);
+            }
+            // Bottom border line for content nodes (mm-content-node)
+            if (nodeEl.classList.contains('mm-content-node')) {
+              const borderColor = (csNode.borderBottomColor && csNode.borderBottomStyle !== 'none') ? csNode.borderBottomColor : getComputedStyle(nodesContainer).getPropertyValue('--background-modifier-border') || '#ccc';
+              const yLine = y + height - parsePx(csNode.borderBottomWidth, 1.5);
+              parts.push(`<line x1="${x}" y1="${yLine}" x2="${x + width}" y2="${yLine}" stroke="${borderColor}" stroke-width="${Math.max(1, parsePx(csNode.borderBottomWidth, 1.5))}"/>`);
+            }
+            // Text rendering
+            const textColor = csNode.color || '#000';
+            const { fontSizePx, fontWeight, fontStyle, fontFamily } = buildFontForMeasure(csNode);
+            const lineHeightPx = computeLineHeightPx(csNode, fontSizePx);
+            // Prefer the actual content div width for wrapping to match on-screen rendering
+            const mmContent = nodeEl.querySelector('.mm-content-text') as HTMLElement | null;
+            let maxTextWidth = Math.max(1, width - padL - padR);
+            let textX = x + padL;
+            if (mmContent) {
+              try {
+                const mr = mmContent.getBoundingClientRect();
+                const nr = nodeEl.getBoundingClientRect();
+                maxTextWidth = Math.max(1, Math.floor(mr.width) - 2); // 2px safety margin
+                textX = x + Math.max(0, Math.round(mr.left - nr.left));
+              } catch {}
+            }
+            // Header nodes (non-content) should not wrap; use effectively unlimited width
+            const isContent = nodeEl.classList.contains('mm-content-node');
+            if (!isContent) {
+              maxTextWidth = 600;
+            }
+            const content = mmContent ? (mmContent.innerText || '') : (nodeEl.innerText || '');
+            const lines = (measureCtx ? measureWrappedLines(content, maxTextWidth, measureCtx, csNode) : content.split(/\r?\n/));
+            const textYTop = y + padT;
+            // Build <text> with tspans
+            const tspans: string[] = [];
+            let dy = 0;
+            for (const line of lines) {
+              const esc = escapeXml(line);
+              // Use dy for subsequent lines; first line uses dominant-baseline hanging from top
+              if (dy === 0) {
+                tspans.push(`<tspan x="${textX}" dy="0">${esc}</tspan>`);
+                dy += lineHeightPx;
+              } else {
+                tspans.push(`<tspan x="${textX}" dy="${lineHeightPx}">${esc}</tspan>`);
+              }
+            }
+            const textEl = `<text x="${textX}" y="${textYTop}" fill="${escapeXmlAttr(textColor)}" font-family="${escapeXmlAttr(fontFamily)}" font-size="${fontSizePx}px" font-weight="${escapeXmlAttr(fontWeight)}" font-style="${escapeXmlAttr(fontStyle)}" dominant-baseline="hanging">${tspans.join('')}</text>`;
+            parts.push(textEl);
+          } catch {}
+        }
+        nodesGroup = parts.join('');
+      }
+
+      // 3) Compose final SVG without any embedded image data
+      const svgOpen = `<?xml version="1.0" encoding="UTF-8"?>\n<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="${w}" height="${h}">`;
+      const svgClose = `</svg>`;
+      const groupOpen = nodesTransform ? `<g transform="${escAttr(nodesTransform)}">` : `<g>`;
+      const groupClose = `</g>`;
       const svg = [
-        `<?xml version="1.0" encoding="UTF-8"?>`,
-        `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="${w}" height="${h}">`,
-        graphDataUrl ? `<image x="0" y="0" width="${w}" height="${h}" xlink:href="${graphDataUrl}" />` : '',
-        `<image x="0" y="0" width="${w}" height="${h}" xlink:href="${nodesSvgUrl}" />`,
-        `</svg>`
+        svgOpen,
+        graphSvg,
+        groupOpen,
+        nodesGroup,
+        groupClose,
+        svgClose
       ].join('');
+
       const filename = this.getDefaultFilename('svg');
       this.downloadText(svg, 'image/svg+xml;charset=utf-8', filename);
     } catch {}

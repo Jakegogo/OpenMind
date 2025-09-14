@@ -682,26 +682,223 @@ var ExportController = class {
         new import_obsidian.Notice("Mindmap not ready");
         return;
       }
-      const dti = window.domtoimage;
-      if (!dti) {
-        new import_obsidian.Notice("SVG export requires dom-to-image");
-        return;
-      }
       const w = jm.view?.size?.w || this.containerElDiv?.clientWidth || 800;
       const h = jm.view?.size?.h || this.containerElDiv?.clientHeight || 600;
       let graphSvg = "";
       try {
-        graphSvg = new XMLSerializer().serializeToString(jm.view.graph?.e_svg);
+        const eSvg = jm.view.graph?.e_svg;
+        if (eSvg) {
+          const clone = eSvg.cloneNode(true);
+          clone.removeAttribute("width");
+          clone.removeAttribute("height");
+          graphSvg = new XMLSerializer().serializeToString(clone);
+        }
       } catch {
       }
-      const graphDataUrl = graphSvg ? `data:image/svg+xml;base64,${btoa(unescape(encodeURIComponent(graphSvg)))}` : "";
-      const nodesSvgUrl = await dti.toSvg(jm.view.e_nodes, { style: { zoom: 1 } });
+      const nodesContainer = jm.view?.e_nodes;
+      const escAttr = (s) => s.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+      let nodesTransform = "";
+      let nodesGroup = "";
+      if (nodesContainer) {
+        try {
+          const cs = getComputedStyle(nodesContainer);
+          const t = cs.transform && cs.transform !== "none" ? cs.transform : "";
+          if (t) nodesTransform = t;
+        } catch {
+        }
+        const parts = [];
+        const measureCanvas = document.createElement("canvas");
+        const measureCtx = measureCanvas.getContext("2d");
+        const escapeXml = (s) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+        const escapeXmlAttr = (s) => s.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+        const parsePx = (v, fallback) => {
+          const n = parseFloat(v || "");
+          return Number.isFinite(n) ? n : fallback;
+        };
+        const computeLineHeightPx = (csNode, fontSizePx) => {
+          const lh = csNode.lineHeight;
+          if (!lh || lh === "normal") return Math.round(fontSizePx * 1.2);
+          if (lh.endsWith("px")) return parsePx(lh, Math.round(fontSizePx * 1.2));
+          const num = parseFloat(lh);
+          if (Number.isFinite(num)) return Math.round(fontSizePx * num);
+          return Math.round(fontSizePx * 1.2);
+        };
+        const buildFontForMeasure = (csNode) => {
+          const fontStyle = csNode.fontStyle || "normal";
+          const fontVariant = csNode.fontVariant || "normal";
+          const fontWeight = csNode.fontWeight || "400";
+          const fontSize = csNode.fontSize || "16px";
+          const fontFamilyRaw = csNode.fontFamily || "sans-serif";
+          const fontFamily = fontFamilyRaw.replace(/["']/g, "");
+          const font = `${fontStyle} ${fontVariant} ${fontWeight} ${fontSize} ${fontFamily}`;
+          const fontSizePx = parsePx(fontSize, 16);
+          return { font, fontSizePx, fontWeight, fontStyle, fontFamily };
+        };
+        const measureWrappedLines = (text, maxWidth, ctx, csNode) => {
+          ctx.save();
+          const { font } = buildFontForMeasure(csNode);
+          ctx.font = font;
+          const rawLines = text.replace(/\r\n?/g, "\n").split("\n");
+          const lines = [];
+          const hasWhitespace = (s) => /\s/.test(s);
+          const takeFittingPrefix = (base, token) => {
+            let fitted = "";
+            for (const ch of token) {
+              const w2 = ctx.measureText(base + fitted + ch).width;
+              if (w2 <= maxWidth || base.length === 0 && fitted.length === 0) {
+                fitted += ch;
+              } else {
+                break;
+              }
+            }
+            return { fitted, rest: token.slice(fitted.length) };
+          };
+          for (const raw of rawLines) {
+            const words = raw.split(/(\s+)/);
+            let current = "";
+            for (const token of words) {
+              const tentative = current + token;
+              const width = ctx.measureText(tentative).width;
+              if (width <= maxWidth || current.length === 0) {
+                current = tentative;
+                continue;
+              }
+              if (!hasWhitespace(token)) {
+                const { fitted, rest } = takeFittingPrefix(current, token);
+                if (fitted.length > 0) {
+                  lines.push((current + fitted).trimEnd());
+                  let remaining = rest;
+                  current = "";
+                  while (remaining.length > 0) {
+                    const { fitted: part, rest: next } = takeFittingPrefix("", remaining);
+                    if (part.length === 0) break;
+                    if (ctx.measureText(part).width <= maxWidth) {
+                      remaining = next;
+                      if (remaining.length === 0) {
+                        current = part;
+                        break;
+                      }
+                      lines.push(part);
+                    } else {
+                      lines.push(part);
+                      remaining = next;
+                    }
+                  }
+                } else {
+                  lines.push(current.trimEnd());
+                  let remaining = token;
+                  current = "";
+                  while (remaining.length > 0) {
+                    const { fitted: part, rest: next } = takeFittingPrefix("", remaining);
+                    if (part.length === 0) break;
+                    if (ctx.measureText(part).width <= maxWidth && next.length === 0) {
+                      current = part;
+                      remaining = next;
+                      break;
+                    } else {
+                      lines.push(part);
+                      remaining = next;
+                    }
+                  }
+                }
+              } else {
+                lines.push(current.trimEnd());
+                current = token.trimStart();
+              }
+            }
+            if (current) lines.push(current.trimEnd());
+          }
+          const safeMax = Math.max(1, maxWidth - 2);
+          const hardWrapped = [];
+          for (const ln of lines) {
+            let current = "";
+            for (const ch of ln) {
+              const w2 = ctx.measureText(current + ch).width;
+              if (w2 <= safeMax || current.length === 0) {
+                current += ch;
+              } else {
+                hardWrapped.push(current.trimEnd());
+                current = ch.trimStart();
+              }
+            }
+            if (current) hardWrapped.push(current.trimEnd());
+          }
+          ctx.restore();
+          return hardWrapped;
+        };
+        const nodeList = Array.from(nodesContainer.querySelectorAll("jmnode"));
+        for (const nodeEl of nodeList) {
+          try {
+            const x = nodeEl.offsetLeft;
+            const y = nodeEl.offsetTop;
+            const width = Math.max(1, nodeEl.clientWidth);
+            const height = Math.max(1, nodeEl.clientHeight);
+            const csNode = getComputedStyle(nodeEl);
+            const padL = parsePx(csNode.paddingLeft, 0);
+            const padT = parsePx(csNode.paddingTop, 0);
+            const padR = parsePx(csNode.paddingRight, 0);
+            const bg = csNode.backgroundColor;
+            const hasBg = bg && bg !== "transparent" && !/rgba\(0,\s*0,\s*0,\s*0\)/i.test(bg);
+            if (hasBg) {
+              parts.push(`<rect x="${x}" y="${y}" width="${width}" height="${height}" fill="${bg}" rx="${parsePx(csNode.borderTopLeftRadius, 0)}" ry="${parsePx(csNode.borderTopLeftRadius, 0)}"/>`);
+            }
+            if (nodeEl.classList.contains("mm-content-node")) {
+              const borderColor = csNode.borderBottomColor && csNode.borderBottomStyle !== "none" ? csNode.borderBottomColor : getComputedStyle(nodesContainer).getPropertyValue("--background-modifier-border") || "#ccc";
+              const yLine = y + height - parsePx(csNode.borderBottomWidth, 1.5);
+              parts.push(`<line x1="${x}" y1="${yLine}" x2="${x + width}" y2="${yLine}" stroke="${borderColor}" stroke-width="${Math.max(1, parsePx(csNode.borderBottomWidth, 1.5))}"/>`);
+            }
+            const textColor = csNode.color || "#000";
+            const { fontSizePx, fontWeight, fontStyle, fontFamily } = buildFontForMeasure(csNode);
+            const lineHeightPx = computeLineHeightPx(csNode, fontSizePx);
+            const mmContent = nodeEl.querySelector(".mm-content-text");
+            let maxTextWidth = Math.max(1, width - padL - padR);
+            let textX = x + padL;
+            if (mmContent) {
+              try {
+                const mr = mmContent.getBoundingClientRect();
+                const nr = nodeEl.getBoundingClientRect();
+                maxTextWidth = Math.max(1, Math.floor(mr.width) - 2);
+                textX = x + Math.max(0, Math.round(mr.left - nr.left));
+              } catch {
+              }
+            }
+            const isContent = nodeEl.classList.contains("mm-content-node");
+            if (!isContent) {
+              maxTextWidth = 600;
+            }
+            const content = mmContent ? mmContent.innerText || "" : nodeEl.innerText || "";
+            const lines = measureCtx ? measureWrappedLines(content, maxTextWidth, measureCtx, csNode) : content.split(/\r?\n/);
+            const textYTop = y + padT;
+            const tspans = [];
+            let dy = 0;
+            for (const line of lines) {
+              const esc = escapeXml(line);
+              if (dy === 0) {
+                tspans.push(`<tspan x="${textX}" dy="0">${esc}</tspan>`);
+                dy += lineHeightPx;
+              } else {
+                tspans.push(`<tspan x="${textX}" dy="${lineHeightPx}">${esc}</tspan>`);
+              }
+            }
+            const textEl = `<text x="${textX}" y="${textYTop}" fill="${escapeXmlAttr(textColor)}" font-family="${escapeXmlAttr(fontFamily)}" font-size="${fontSizePx}px" font-weight="${escapeXmlAttr(fontWeight)}" font-style="${escapeXmlAttr(fontStyle)}" dominant-baseline="hanging">${tspans.join("")}</text>`;
+            parts.push(textEl);
+          } catch {
+          }
+        }
+        nodesGroup = parts.join("");
+      }
+      const svgOpen = `<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="${w}" height="${h}">`;
+      const svgClose = `</svg>`;
+      const groupOpen = nodesTransform ? `<g transform="${escAttr(nodesTransform)}">` : `<g>`;
+      const groupClose = `</g>`;
       const svg = [
-        `<?xml version="1.0" encoding="UTF-8"?>`,
-        `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="${w}" height="${h}">`,
-        graphDataUrl ? `<image x="0" y="0" width="${w}" height="${h}" xlink:href="${graphDataUrl}" />` : "",
-        `<image x="0" y="0" width="${w}" height="${h}" xlink:href="${nodesSvgUrl}" />`,
-        `</svg>`
+        svgOpen,
+        graphSvg,
+        groupOpen,
+        nodesGroup,
+        groupClose,
+        svgClose
       ].join("");
       const filename = this.getDefaultFilename("svg");
       this.downloadText(svg, "image/svg+xml;charset=utf-8", filename);
@@ -1473,7 +1670,7 @@ var MindmapView = class extends import_obsidian2.ItemView {
     const includeWrap = toolbar.createEl("label");
     includeWrap.style.display = "flex";
     includeWrap.style.alignItems = "center";
-    includeWrap.style.gap = "3px";
+    includeWrap.style.gap = "6px";
     const includeCb = includeWrap.createEl("input", { type: "checkbox" });
     includeCb.checked = !!this.plugin.settings?.includeContent;
     includeWrap.createSpan({ text: "Include content" });
@@ -2740,9 +2937,13 @@ var MindmapView = class extends import_obsidian2.ItemView {
           box-shadow: none !important;
           border-radius: 0 !important;
           padding: 0 !important;
-          margin: -2px !important;
+          margin-left: -2px !important;
+          margin-right: -2px !important;
           line-height: 1.5 !important;
           text-align: left !important;
+          min-height: 1.5em !important;
+          display: block !important;
+          box-sizing: border-box !important;
           font: 300 1em/1.5 'PingFang SC', 'Lantinghei SC', 'Microsoft Yahei', 'Hiragino Sans GB', 'Microsoft Sans Serif', 'WenQuanYi Micro Hei', 'sans';
         }
       `;
