@@ -1,4 +1,8 @@
-# Mindmap Preview (jsMind) - 手动安装与使用说明
+# Mindmap Preview (jsMind)
+
+![assets/image.png](assets/image.png)
+
+# 手动安装与使用说明
 
 ## 构建
 
