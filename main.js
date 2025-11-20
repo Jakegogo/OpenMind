@@ -1611,6 +1611,15 @@ var MindmapView = class extends import_obsidian2.ItemView {
       let moved = false;
       const startX = ev.clientX;
       const startY = ev.clientY;
+      const target = (() => {
+        try {
+          if (!this.containerElDiv) return null;
+          const inner = this.containerElDiv.querySelector(".jsmind-inner");
+          return inner ?? this.containerElDiv;
+        } catch {
+          return null;
+        }
+      })();
       const onMove = (mvEv) => {
         if (moved) return;
         const dx = Math.abs(mvEv.clientX - startX);
@@ -1618,12 +1627,20 @@ var MindmapView = class extends import_obsidian2.ItemView {
         if (dx + dy > 3) {
           moved = true;
           this.setJsMindScrollBehavior("auto");
+          try {
+            if (target) target.style.cursor = "grabbing";
+          } catch {
+          }
         }
       };
       const onUp = () => {
         window.removeEventListener("mousemove", onMove, true);
         window.removeEventListener("mouseup", onUp, true);
         this.setJsMindScrollBehavior("smooth");
+        try {
+          if (target) target.style.cursor = "";
+        } catch {
+        }
       };
       window.addEventListener("mousemove", onMove, true);
       window.addEventListener("mouseup", onUp, true);

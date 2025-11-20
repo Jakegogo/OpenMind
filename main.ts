@@ -611,6 +611,13 @@ class MindmapView extends ItemView {
       let moved = false;
       const startX = ev.clientX;
       const startY = ev.clientY;
+      const target: HTMLElement | null = (() => {
+        try {
+          if (!this.containerElDiv) return null;
+          const inner = this.containerElDiv.querySelector('.jsmind-inner') as HTMLElement | null;
+          return inner ?? this.containerElDiv;
+        } catch { return null; }
+      })();
       const onMove = (mvEv: MouseEvent) => {
         if (moved) return;
         const dx = Math.abs(mvEv.clientX - startX);
@@ -619,6 +626,8 @@ class MindmapView extends ItemView {
           moved = true;
           // Disable smoothness while dragging
           this.setJsMindScrollBehavior('auto');
+          // Indicate dragging cursor
+          try { if (target) target.style.cursor = 'grabbing'; } catch {}
         }
       };
       const onUp = () => {
@@ -626,6 +635,8 @@ class MindmapView extends ItemView {
         window.removeEventListener('mouseup', onUp, true);
         // Restore smooth scrolling after drag ends
         this.setJsMindScrollBehavior('smooth');
+        // Restore cursor
+        try { if (target) target.style.cursor = ''; } catch {}
       };
       window.addEventListener('mousemove', onMove, true);
       window.addEventListener('mouseup', onUp, true);
