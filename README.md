@@ -19,6 +19,30 @@
 ./build-jsmind.sh
 ```
 
+### 部署（带路径参数）
+
+支持三种部署目标（注意带空格路径需加双引号）：
+
+- 将插件批量安装到“Obsidian Documents”目录下的所有库（每个库的 `.obsidian/plugins/obsidian-mindmap-jsmind`）：
+
+```bash
+./build-plugin.sh "/Users/<USER>/Library/Mobile Documents/iCloud~md~obsidian/Documents"
+```
+
+- 将插件安装到单个库（库根目录包含 `.obsidian`）：
+
+```bash
+./build-plugin.sh "/Users/<USER>/Library/Mobile Documents/iCloud~md~obsidian/Documents/默认"
+```
+
+- 直接指定插件目录：
+
+```bash
+./build-plugin.sh "/Users/<USER>/Library/Mobile Documents/iCloud~md~obsidian/Documents/默认/.obsidian/plugins/obsidian-mindmap-jsmind"
+```
+
+提示：如果传入了一个不存在的路径（例如末尾为 `.../Documents/Obsidian`），请改用 `.../Documents` 作为扫描根目录，或直接传入具体库路径。
+
 
 ## 手动安装
 

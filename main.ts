@@ -79,7 +79,7 @@ function extractContentTree(markdownText: string, start: number, end: number): C
     // Limit to "immediate body before first sub-heading" within [start, end]
     const atxHeadingRe = /^(#{1,6})\s+.*$/;
     const setextH1Re = /^=+\s*$/;
-    const setextH2Re = /^-+\s*$/;
+    const setextH2Re = /^-{4,}\s*$/; // require 4+ dashes to avoid '- ' and '--' and '---'
     const isHrTripleDash = (s: string) => /^\s*---\s*$/.test(s);
     let stopAt = endLine;
     {
@@ -112,15 +112,20 @@ function extractContentTree(markdownText: string, start: number, end: number): C
     const RE_NUM_BOLD = /^(\s*)(\d+)\.\s*\*\*(.+?)\*\*[：:]?.*$/; // '1.**Title**：...'
     const RE_TASK_UNCHECKED = new RegExp(`^(\\s*)${BULLET}\\s*\\[\\s\\]\\s*(.+)$`); // '- [ ] text'
     const RE_TASK_CHECKED = new RegExp(`^(\\s*)${BULLET}\\s*\\[(?:x|X)\\]\\s*(.+)$`); // '- [x] text'
-    const RE_OL_ITEM = /^(\s*)(\d+)\.\s*(.+)$/; // ordered list item (allow no space)
+    const RE_OL_ITEM = /^(\s*)(\d+)[\.\)．、]\s*(.+)$/; // ordered list: 1. 1) 1、 1．
     // ---------------------------------------------------------
+    // 2.5) Title-with-colon lines (e.g., '业务流程梳理: ...')
+    // Recognize as a parent content node only if followed by list items.
+    const RE_TITLE_COLON_LINE = /^(\s*)([^-*#].{0,80}?)[：:]\s*(?:（.*?）|\(.*?\))?\s*$/;
     let structuralDepthBase = 0; // 0 for none, increases after bold/italic blocks
+    let baseFloorAfterBold = 0;   // persist base >=1 after a standalone bold title
     for (let i = startLine; i <= endLine && i < lines.length; i++) {
       const raw = lines[i];
-      if (/^\s*$/.test(raw)) { structuralDepthBase = 0; continue; }
+      if (/^\s*$/.test(raw)) { structuralDepthBase = Math.max(structuralDepthBase, baseFloorAfterBold); continue; }
       if (/^\s*```/.test(raw)) { inCode = !inCode; continue; }
       if (inCode) continue;
       let label: string | null = null;
+      let fromTitleColon = false;
       let depthSpaces = 0;
       // 1) Numbered + bold (e.g., '1.**RAG**：')
       {
@@ -162,6 +167,27 @@ function extractContentTree(markdownText: string, start: number, end: number): C
           continue;
         }
       }
+      // 3.5) Title-with-colon as parent when followed by list items
+      if (!label) {
+        const m = raw.match(RE_TITLE_COLON_LINE);
+        if (m) {
+          // Lookahead to ensure the next non-empty line is a list item
+          let hasListAfter = false;
+          for (let j = i + 1; j <= endLine && j < lines.length; j++) {
+            const look = lines[j];
+            if (/^\s*$/.test(look)) continue;
+            if (RE_UL_ITEM.test(look) || RE_OL_ITEM.test(look) || RE_TASK_UNCHECKED.test(look) || RE_TASK_CHECKED.test(look)) {
+              hasListAfter = true;
+            }
+            break;
+          }
+          if (hasListAfter) {
+            depthSpaces = 0;
+            label = (m[2] || '').trim();
+            fromTitleColon = true;
+          }
+        }
+      }
       // 4) List items
       if (!label) {
         // Ordered list
@@ -188,7 +214,7 @@ function extractContentTree(markdownText: string, start: number, end: number): C
       if (!label) {
         const bold = raw.match(/^\s*\*\*(.+?)\*\*\s*$/);
         const italic = raw.match(/^\s*\*(.+?)\*\s*$/) || raw.match(/^\s*_(.+?)_\s*$/);
-        if (bold) { label = bold[1].trim(); depthSpaces = 0; }
+        if (bold) { label = bold[1].trim(); depthSpaces = 0; baseFloorAfterBold = 1; }
         else if (italic) { label = italic[1].trim(); depthSpaces = 2; }
       }
       if (!label) continue;
@@ -196,10 +222,15 @@ function extractContentTree(markdownText: string, start: number, end: number): C
       // Apply structural base so that bold > italic > list hierarchy is preserved
       if (/^\s*\*\*(.+?)\*\*\s*$/.test(raw)) {
         depth = 0;
-        structuralDepthBase = 1; // next block goes under bold
+        structuralDepthBase = Math.max(1, baseFloorAfterBold); // next block goes under bold
       } else if (/^\s*(?:\*.+?\*|_.+?_)\s*$/.test(raw)) {
         depth = Math.max(structuralDepthBase, 1);
         structuralDepthBase = depth + 1; // lists will go under italic
+      } else if (fromTitleColon) {
+        // Place the title-with-colon at current structural base (under bold if present),
+        // then advance base so following list items become its children.
+        depth = Math.max(structuralDepthBase, 0);
+        structuralDepthBase = depth + 1;
       } else {
         depth = Math.max(depth, structuralDepthBase);
       }
@@ -275,7 +306,7 @@ function computeHeadingSections(markdownText: string): HeadingNode[] {
           raw: line + '\n' + next,
           style: 'setext',
         });
-      } else if (/^-+\s*$/.test(next) && !/^\s*---\s*$/.test(next)) {
+      } else if (/^-{4,}\s*$/.test(next)) { // 4+ dashes only; '---' excluded implicitly
         const start = offset;
         const title = line.trim();
         const headingTextEnd = start + line.length;
@@ -564,6 +595,72 @@ class MindmapView extends ItemView {
     } catch { return true; }
   }
 
+  // Apply scroll-behavior to jsMind's inner scrolling element when available
+  private setJsMindScrollBehavior(mode: 'smooth' | 'auto'): void {
+    try {
+      if (!this.containerElDiv) return;
+      const inner = this.containerElDiv.querySelector('.jsmind-inner') as HTMLElement | null;
+      const target = (inner as HTMLElement | null) ?? this.containerElDiv;
+      (target.style as any).scrollBehavior = mode;
+    } catch {}
+  }
+
+  // Attach handlers to switch scroll-behavior to 'auto' while dragging and restore to 'smooth' on end
+  private attachScrollBehaviorDragHandlers(nodesContainer: Element): void {
+    const onNodeMouseDown = (ev: MouseEvent) => {
+      let moved = false;
+      const startX = ev.clientX;
+      const startY = ev.clientY;
+      const onMove = (mvEv: MouseEvent) => {
+        if (moved) return;
+        const dx = Math.abs(mvEv.clientX - startX);
+        const dy = Math.abs(mvEv.clientY - startY);
+        if (dx + dy > 3) {
+          moved = true;
+          // Disable smoothness while dragging
+          this.setJsMindScrollBehavior('auto');
+        }
+      };
+      const onUp = () => {
+        window.removeEventListener('mousemove', onMove, true);
+        window.removeEventListener('mouseup', onUp, true);
+        // Restore smooth scrolling after drag ends
+        this.setJsMindScrollBehavior('smooth');
+      };
+      window.addEventListener('mousemove', onMove, true);
+      window.addEventListener('mouseup', onUp, true);
+    };
+    nodesContainer.addEventListener('mousedown', onNodeMouseDown as any, true);
+    const onNodeTouchStart = (ev: TouchEvent) => {
+      const touch = ev.touches && ev.touches[0];
+      if (!touch) return;
+      let moved = false;
+      const startX = touch.clientX;
+      const startY = touch.clientY;
+      const onTouchMove = (mvEv: TouchEvent) => {
+        if (moved) return;
+        const tt = mvEv.touches && mvEv.touches[0];
+        if (!tt) return;
+        const dx = Math.abs(tt.clientX - startX);
+        const dy = Math.abs(tt.clientY - startY);
+        if (dx + dy > 3) {
+          moved = true;
+          this.setJsMindScrollBehavior('auto');
+        }
+      };
+      const onTouchEnd = () => {
+        window.removeEventListener('touchmove', onTouchMove, true);
+        window.removeEventListener('touchend', onTouchEnd, true);
+        this.setJsMindScrollBehavior('smooth');
+      };
+      window.addEventListener('touchmove', onTouchMove, true);
+      window.addEventListener('touchend', onTouchEnd, true);
+    };
+    nodesContainer.addEventListener('touchstart', onNodeTouchStart as any, true);
+    this.register(() => nodesContainer && nodesContainer.removeEventListener('mousedown', onNodeMouseDown as any, true));
+    this.register(() => nodesContainer && nodesContainer.removeEventListener('touchstart', onNodeTouchStart as any, true));
+  }
+
   private setSuspended(suspend: boolean) {
     if (this.isSuspended === suspend) return;
     this.isSuspended = suspend;
@@ -664,7 +761,6 @@ class MindmapView extends ItemView {
         st3.id = smoothId;
         st3.textContent = `
           /* Enable smooth programmatic scrolling */
-          #jsmind_container { scroll-behavior: smooth; }
           .jsmind-inner { scroll-behavior: smooth; }
           /* Content node visuals: no box, only a bottom line */
           jmnode.mm-content-node { background: transparent !important; border: none !important; box-shadow: none !important; border-radius: 0 !important; padding: 0 2px 2px 2px; }
@@ -974,7 +1070,7 @@ class MindmapView extends ItemView {
     this.containerElDiv.empty();
     this.containerElDiv.id = 'jsmind_container';
     const themeKey: ThemeName = (this.plugin as any).settings?.theme || 'default';
-    const options: any = { container: 'jsmind_container', theme: getJsMindThemeNameFromSetting(themeKey), editable: true, mode: 'side', view: { engine: 'svg' ,expander_style: 'number', draggable: false, line_width: 1 }};
+    const options: any = { container: 'jsmind_container', theme: getJsMindThemeNameFromSetting(themeKey), editable: true, mode: 'side', view: { engine: 'svg' ,expander_style: 'number', draggable: true, line_width: 1 }};
     options.view.custom_node_render = (jm: any, ele: HTMLElement, node: any) => {
       try {
         const id = String(node?.id ?? '');
@@ -1161,6 +1257,8 @@ class MindmapView extends ItemView {
             const nodeEl = t && (t.closest ? t.closest('jmnode') : null);
             const nodeId = nodeEl?.getAttribute('nodeid') || '';
             if (nodeId) {
+              // Ensure smooth scrolling for programmatic scrolls on click
+              this.setJsMindScrollBehavior('smooth');
               if (this.isMindmapEditingActive()) return;
               this.enterPreview();
               // Debounce click similarly to not interfere double-click
@@ -1225,6 +1323,8 @@ class MindmapView extends ItemView {
             if (!isNode) this.forceEnterScroll();
           };
           nodesContainer.addEventListener('mousedown', blankHandler as any, true);
+          // Toggle scroll-behavior during drag vs click on nodes
+          this.attachScrollBehaviorDragHandlers(nodesContainer);
           if ((this.plugin as any).settings?.enablePopup) {
             nodesContainer.addEventListener('mouseover', overHandler as any);
             nodesContainer.addEventListener('mouseout', outHandler as any);
@@ -2154,5 +2254,6 @@ class MindmapSettingTab extends PluginSettingTab {
         }));
   }
 }
+
 
 

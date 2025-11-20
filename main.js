@@ -1036,7 +1036,7 @@ function extractContentTree(markdownText, start, end) {
     }
     const atxHeadingRe = /^(#{1,6})\s+.*$/;
     const setextH1Re = /^=+\s*$/;
-    const setextH2Re = /^-+\s*$/;
+    const setextH2Re = /^-{4,}\s*$/;
     const isHrTripleDash = (s) => /^\s*---\s*$/.test(s);
     let stopAt = endLine;
     {
@@ -1070,12 +1070,14 @@ function extractContentTree(markdownText, start, end) {
     const RE_NUM_BOLD = /^(\s*)(\d+)\.\s*\*\*(.+?)\*\*[：:]?.*$/;
     const RE_TASK_UNCHECKED = new RegExp(`^(\\s*)${BULLET}\\s*\\[\\s\\]\\s*(.+)$`);
     const RE_TASK_CHECKED = new RegExp(`^(\\s*)${BULLET}\\s*\\[(?:x|X)\\]\\s*(.+)$`);
-    const RE_OL_ITEM = /^(\s*)(\d+)\.\s*(.+)$/;
+    const RE_OL_ITEM = /^(\s*)(\d+)[\.\)．、]\s*(.+)$/;
+    const RE_TITLE_COLON_LINE = /^(\s*)([^-*#].{0,80}?)[：:]\s*(?:（.*?）|\(.*?\))?\s*$/;
     let structuralDepthBase = 0;
+    let baseFloorAfterBold = 0;
     for (let i = startLine; i <= endLine && i < lines.length; i++) {
       const raw = lines[i];
       if (/^\s*$/.test(raw)) {
-        structuralDepthBase = 0;
+        structuralDepthBase = Math.max(structuralDepthBase, baseFloorAfterBold);
         continue;
       }
       if (/^\s*```/.test(raw)) {
@@ -1084,6 +1086,7 @@ function extractContentTree(markdownText, start, end) {
       }
       if (inCode) continue;
       let label = null;
+      let fromTitleColon = false;
       let depthSpaces = 0;
       {
         const m = raw.match(RE_NUM_BOLD);
@@ -1120,6 +1123,25 @@ function extractContentTree(markdownText, start, end) {
         }
       }
       if (!label) {
+        const m = raw.match(RE_TITLE_COLON_LINE);
+        if (m) {
+          let hasListAfter = false;
+          for (let j = i + 1; j <= endLine && j < lines.length; j++) {
+            const look = lines[j];
+            if (/^\s*$/.test(look)) continue;
+            if (RE_UL_ITEM.test(look) || RE_OL_ITEM.test(look) || RE_TASK_UNCHECKED.test(look) || RE_TASK_CHECKED.test(look)) {
+              hasListAfter = true;
+            }
+            break;
+          }
+          if (hasListAfter) {
+            depthSpaces = 0;
+            label = (m[2] || "").trim();
+            fromTitleColon = true;
+          }
+        }
+      }
+      if (!label) {
         const mol = raw.match(RE_OL_ITEM);
         if (mol) {
           depthSpaces = mol[1].length;
@@ -1144,6 +1166,7 @@ function extractContentTree(markdownText, start, end) {
         if (bold) {
           label = bold[1].trim();
           depthSpaces = 0;
+          baseFloorAfterBold = 1;
         } else if (italic) {
           label = italic[1].trim();
           depthSpaces = 2;
@@ -1153,9 +1176,12 @@ function extractContentTree(markdownText, start, end) {
       let depth = Math.floor(depthSpaces / 2);
       if (/^\s*\*\*(.+?)\*\*\s*$/.test(raw)) {
         depth = 0;
-        structuralDepthBase = 1;
+        structuralDepthBase = Math.max(1, baseFloorAfterBold);
       } else if (/^\s*(?:\*.+?\*|_.+?_)\s*$/.test(raw)) {
         depth = Math.max(structuralDepthBase, 1);
+        structuralDepthBase = depth + 1;
+      } else if (fromTitleColon) {
+        depth = Math.max(structuralDepthBase, 0);
         structuralDepthBase = depth + 1;
       } else {
         depth = Math.max(depth, structuralDepthBase);
@@ -1238,7 +1264,7 @@ function computeHeadingSections(markdownText) {
           raw: line + "\n" + next,
           style: "setext"
         });
-      } else if (/^-+\s*$/.test(next) && !/^\s*---\s*$/.test(next)) {
+      } else if (/^-{4,}\s*$/.test(next)) {
         const start = offset;
         const title = line.trim();
         const headingTextEnd = start + line.length;
@@ -1569,6 +1595,69 @@ var MindmapView = class extends import_obsidian2.ItemView {
       return true;
     }
   }
+  // Apply scroll-behavior to jsMind's inner scrolling element when available
+  setJsMindScrollBehavior(mode) {
+    try {
+      if (!this.containerElDiv) return;
+      const inner = this.containerElDiv.querySelector(".jsmind-inner");
+      const target = inner ?? this.containerElDiv;
+      target.style.scrollBehavior = mode;
+    } catch {
+    }
+  }
+  // Attach handlers to switch scroll-behavior to 'auto' while dragging and restore to 'smooth' on end
+  attachScrollBehaviorDragHandlers(nodesContainer) {
+    const onNodeMouseDown = (ev) => {
+      let moved = false;
+      const startX = ev.clientX;
+      const startY = ev.clientY;
+      const onMove = (mvEv) => {
+        if (moved) return;
+        const dx = Math.abs(mvEv.clientX - startX);
+        const dy = Math.abs(mvEv.clientY - startY);
+        if (dx + dy > 3) {
+          moved = true;
+          this.setJsMindScrollBehavior("auto");
+        }
+      };
+      const onUp = () => {
+        window.removeEventListener("mousemove", onMove, true);
+        window.removeEventListener("mouseup", onUp, true);
+        this.setJsMindScrollBehavior("smooth");
+      };
+      window.addEventListener("mousemove", onMove, true);
+      window.addEventListener("mouseup", onUp, true);
+    };
+    nodesContainer.addEventListener("mousedown", onNodeMouseDown, true);
+    const onNodeTouchStart = (ev) => {
+      const touch = ev.touches && ev.touches[0];
+      if (!touch) return;
+      let moved = false;
+      const startX = touch.clientX;
+      const startY = touch.clientY;
+      const onTouchMove = (mvEv) => {
+        if (moved) return;
+        const tt = mvEv.touches && mvEv.touches[0];
+        if (!tt) return;
+        const dx = Math.abs(tt.clientX - startX);
+        const dy = Math.abs(tt.clientY - startY);
+        if (dx + dy > 3) {
+          moved = true;
+          this.setJsMindScrollBehavior("auto");
+        }
+      };
+      const onTouchEnd = () => {
+        window.removeEventListener("touchmove", onTouchMove, true);
+        window.removeEventListener("touchend", onTouchEnd, true);
+        this.setJsMindScrollBehavior("smooth");
+      };
+      window.addEventListener("touchmove", onTouchMove, true);
+      window.addEventListener("touchend", onTouchEnd, true);
+    };
+    nodesContainer.addEventListener("touchstart", onNodeTouchStart, true);
+    this.register(() => nodesContainer && nodesContainer.removeEventListener("mousedown", onNodeMouseDown, true));
+    this.register(() => nodesContainer && nodesContainer.removeEventListener("touchstart", onNodeTouchStart, true));
+  }
   setSuspended(suspend) {
     if (this.isSuspended === suspend) return;
     this.isSuspended = suspend;
@@ -1650,7 +1739,6 @@ var MindmapView = class extends import_obsidian2.ItemView {
         st3.id = smoothId;
         st3.textContent = `
           /* Enable smooth programmatic scrolling */
-          #jsmind_container { scroll-behavior: smooth; }
           .jsmind-inner { scroll-behavior: smooth; }
           /* Content node visuals: no box, only a bottom line */
           jmnode.mm-content-node { background: transparent !important; border: none !important; box-shadow: none !important; border-radius: 0 !important; padding: 0 2px 2px 2px; }
@@ -1931,7 +2019,7 @@ var MindmapView = class extends import_obsidian2.ItemView {
     this.containerElDiv.empty();
     this.containerElDiv.id = "jsmind_container";
     const themeKey = this.plugin.settings?.theme || "default";
-    const options = { container: "jsmind_container", theme: getJsMindThemeNameFromSetting(themeKey), editable: true, mode: "side", view: { engine: "svg", expander_style: "number", draggable: false, line_width: 1 } };
+    const options = { container: "jsmind_container", theme: getJsMindThemeNameFromSetting(themeKey), editable: true, mode: "side", view: { engine: "svg", expander_style: "number", draggable: true, line_width: 1 } };
     options.view.custom_node_render = (jm, ele, node) => {
       try {
         const id = String(node?.id ?? "");
@@ -2131,6 +2219,7 @@ var MindmapView = class extends import_obsidian2.ItemView {
             const nodeEl = t && (t.closest ? t.closest("jmnode") : null);
             const nodeId = nodeEl?.getAttribute("nodeid") || "";
             if (nodeId) {
+              this.setJsMindScrollBehavior("smooth");
               if (this.isMindmapEditingActive()) return;
               this.enterPreview();
               if (this.revealTimeoutId != null) window.clearTimeout(this.revealTimeoutId);
@@ -2194,6 +2283,7 @@ var MindmapView = class extends import_obsidian2.ItemView {
             if (!isNode) this.forceEnterScroll();
           };
           nodesContainer.addEventListener("mousedown", blankHandler, true);
+          this.attachScrollBehaviorDragHandlers(nodesContainer);
           if (this.plugin.settings?.enablePopup) {
             nodesContainer.addEventListener("mouseover", overHandler);
             nodesContainer.addEventListener("mouseout", outHandler);
