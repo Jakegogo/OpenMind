@@ -1,4 +1,13 @@
-# Mindmap Preview (jsMind) - 手动安装与使用说明
+# Mindmap Preview (jsMind)
+
+![assets/image.png](assets/image.png)
+
+# 实时markdown to mindmap预览插件
+- **实时预览与双向同步**: 将 Markdown 标题结构实时渲染为思维导图；支持编辑器滚动→导图选中、点击导图→编辑器定位；在导图内重命名/增删节点会直接写回 Markdown。
+- **智能视图行为**: 细化“滚动/编辑/预览”三态，同步与居中规则更自然；可只在必要时轻柔居中，避免视图跳动。
+- **导出能力完善**: 一键导出 PNG（1x/2x）与纯 SVG（矢量，文本逐行排版，无位图嵌入）；内置 jsMind 截图插件，dom-to-image 兜底。
+
+# 手动安装与使用说明
 
 ## 构建
 
