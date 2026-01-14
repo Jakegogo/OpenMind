@@ -3072,6 +3072,26 @@ var MindmapPlugin = class extends import_obsidian2.Plugin {
     this.collapsedByFile = {};
     this.settings = { autoFollow: true, theme: "default", enablePopup: true, includeContent: false };
   }
+  async openMindmapForFile(file) {
+    const targetFile = file ?? this.app.workspace.getActiveFile();
+    if (!targetFile) {
+      new import_obsidian2.Notice("No active file");
+      return;
+    }
+    const ws = this.app.workspace;
+    let leaf = ws.getLeavesOfType?.(VIEW_TYPE_MINDMAP)?.[0] || null;
+    if (!leaf) {
+      leaf = this.app.workspace.getRightLeaf(true);
+    }
+    if (!leaf && ws.getLeaf) {
+      leaf = ws.getLeaf("split", "vertical") ?? ws.getLeaf(false);
+    }
+    if (!leaf) return;
+    await leaf.setViewState({ type: VIEW_TYPE_MINDMAP, active: true });
+    const view = leaf.view;
+    await view.setFile(targetFile);
+    this.app.workspace.revealLeaf(leaf);
+  }
   async onload() {
     try {
       const g = window;
@@ -3113,21 +3133,14 @@ var MindmapPlugin = class extends import_obsidian2.Plugin {
       VIEW_TYPE_MINDMAP,
       (leaf) => new MindmapView(leaf, this)
     );
+    this.addRibbonIcon("brain", "Open Mindmap (jsMind)", async () => {
+      await this.openMindmapForFile(this.app.workspace.getActiveFile());
+    });
     this.addCommand({
       id: "open-jsmind-preview",
       name: "Preview current markdown as mindmap",
       callback: async () => {
-        const file = this.app.workspace.getActiveFile();
-        if (!file) {
-          new import_obsidian2.Notice("No active file");
-          return;
-        }
-        const leaf = this.app.workspace.getRightLeaf(false);
-        if (!leaf) return;
-        await leaf.setViewState({ type: VIEW_TYPE_MINDMAP, active: true });
-        const view = leaf.view;
-        await view.setFile(file);
-        this.app.workspace.revealLeaf(leaf);
+        await this.openMindmapForFile(this.app.workspace.getActiveFile());
       }
     });
     this.registerDomEvent(window, "resize", () => {

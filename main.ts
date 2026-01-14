@@ -2070,8 +2070,31 @@ class MindmapView extends ItemView {
 }
 
 export default class MindmapPlugin extends Plugin {
-  private collapsedByFile: Record<string, string[]> = {};
+  public collapsedByFile: Record<string, string[]> = {};
   public settings: { autoFollow: boolean; theme: ThemeName; enablePopup: boolean; includeContent?: boolean } = { autoFollow: true, theme: 'default', enablePopup: true, includeContent: false };
+
+  private async openMindmapForFile(file: TFile | null): Promise<void> {
+    const targetFile = file ?? this.app.workspace.getActiveFile();
+    if (!targetFile) {
+      new Notice('No active file');
+      return;
+    }
+    const ws: any = this.app.workspace as any;
+    let leaf = (ws.getLeavesOfType?.(VIEW_TYPE_MINDMAP)?.[0] as any) || null;
+    if (!leaf) {
+      // Create a right leaf if needed (closing the tab may remove the whole right pane)
+      leaf = this.app.workspace.getRightLeaf(true);
+    }
+    if (!leaf && ws.getLeaf) {
+      // Fallback for older/newer API shapes
+      leaf = ws.getLeaf('split', 'vertical') ?? ws.getLeaf(false);
+    }
+    if (!leaf) return;
+    await leaf.setViewState({ type: VIEW_TYPE_MINDMAP, active: true });
+    const view = leaf.view as MindmapView;
+    await view.setFile(targetFile);
+    this.app.workspace.revealLeaf(leaf);
+  }
 
   async onload() {
     // Minimal logic change (Option B): sanitize class tokens with whitespace
@@ -2120,21 +2143,16 @@ export default class MindmapPlugin extends Plugin {
       (leaf) => new MindmapView(leaf, this)
     );
 
+    // Left ribbon entry to reopen/focus the mindmap view even after its tab was closed
+    this.addRibbonIcon('brain', 'Open Mindmap (jsMind)', async () => {
+      await this.openMindmapForFile(this.app.workspace.getActiveFile());
+    });
+
     this.addCommand({
       id: 'open-jsmind-preview',
       name: 'Preview current markdown as mindmap',
       callback: async () => {
-        const file = this.app.workspace.getActiveFile();
-        if (!file) {
-          new Notice('No active file');
-          return;
-        }
-        const leaf = this.app.workspace.getRightLeaf(false);
-        if (!leaf) return;
-        await leaf.setViewState({ type: VIEW_TYPE_MINDMAP, active: true });
-        const view = leaf.view as MindmapView;
-        await view.setFile(file);
-        this.app.workspace.revealLeaf(leaf);
+        await this.openMindmapForFile(this.app.workspace.getActiveFile());
       },
     });
 
