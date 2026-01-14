@@ -35,12 +35,14 @@ if [ "${1-}" != "" ]; then
     local plugin_dir="$1"
     echo "Installing plugin to: $plugin_dir"
     mkdir -p "$plugin_dir/vendor/jsmind/es6" "$plugin_dir/vendor/jsmind/style" "$plugin_dir/vendor/dom-to-image"
+    mkdir -p "$plugin_dir/assets"
     cp -f "$ROOT/manifest.json" "$plugin_dir/"
     cp -f "$ROOT/main.js" "$plugin_dir/"
     cp -f "$ROOT/vendor/jsmind/es6/jsmind.js" "$plugin_dir/vendor/jsmind/es6/"
     cp -f "$ROOT/vendor/jsmind/es6/jsmind.screenshot.js" "$plugin_dir/vendor/jsmind/es6/"
     cp -f "$ROOT/vendor/jsmind/style/jsmind.css" "$plugin_dir/vendor/jsmind/style/"
     cp -f "$ROOT/vendor/dom-to-image/dom-to-image.min.js" "$plugin_dir/vendor/dom-to-image/"
+    cp -f "$ROOT/assets/icon.svg" "$plugin_dir/assets/icon.svg"
     echo "✔ Deployed: $plugin_dir"
   }
 

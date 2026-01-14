@@ -1011,6 +1011,7 @@ function buildThemesCss() {
 
 // main.ts
 var VIEW_TYPE_MINDMAP = "obsidian-jsmind-mindmap-view";
+var RIBBON_ICON_ID_MINDMAP = "obsidian-jsmind-icon-mindmap";
 var __mm_lastHeadingsText = null;
 var __mm_lastHeadingsRes = null;
 var __mm_lastHeadingsTs = 0;
@@ -3072,6 +3073,26 @@ var MindmapPlugin = class extends import_obsidian2.Plugin {
     this.collapsedByFile = {};
     this.settings = { autoFollow: true, theme: "default", enablePopup: true, includeContent: false };
   }
+  async tryRegisterCustomRibbonIcon() {
+    try {
+      const iconPath = `${this.app.vault.configDir}/plugins/obsidian-mindmap-jsmind/assets/icon.svg`;
+      const svg = await this.app.vault.adapter.read(iconPath);
+      if (typeof svg !== "string") return false;
+      const s = svg.trim();
+      const start = s.indexOf("<svg");
+      const end = s.lastIndexOf("</svg>");
+      if (start < 0 || end < 0) return false;
+      let svgOnly = s.slice(start, end + "</svg>".length);
+      try {
+        svgOnly = svgOnly.replace(/\bfill\s*=\s*["']#([0-9a-fA-F]{3,8})["']/g, 'fill="currentColor"').replace(/\bstroke\s*=\s*["']#([0-9a-fA-F]{3,8})["']/g, 'stroke="currentColor"').replace(/\bfill\s*:\s*#([0-9a-fA-F]{3,8})\b/g, "fill: currentColor").replace(/\bstroke\s*:\s*#([0-9a-fA-F]{3,8})\b/g, "stroke: currentColor");
+      } catch {
+      }
+      (0, import_obsidian2.addIcon)(RIBBON_ICON_ID_MINDMAP, svgOnly);
+      return true;
+    } catch {
+      return false;
+    }
+  }
   async openMindmapForFile(file) {
     const targetFile = file ?? this.app.workspace.getActiveFile();
     if (!targetFile) {
@@ -3133,7 +3154,8 @@ var MindmapPlugin = class extends import_obsidian2.Plugin {
       VIEW_TYPE_MINDMAP,
       (leaf) => new MindmapView(leaf, this)
     );
-    this.addRibbonIcon("brain", "Open Mindmap (jsMind)", async () => {
+    const iconId = await this.tryRegisterCustomRibbonIcon() ? RIBBON_ICON_ID_MINDMAP : "git-branch";
+    this.addRibbonIcon(iconId, "Open Mindmap (jsMind)", async () => {
       await this.openMindmapForFile(this.app.workspace.getActiveFile());
     });
     this.addCommand({

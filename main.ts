@@ -1,4 +1,4 @@
-import { App, Editor, ItemView, MarkdownView, Notice, Plugin, PluginSettingTab, Setting, TFile, WorkspaceLeaf, requestUrl, MarkdownRenderer } from 'obsidian';
+import { App, Editor, ItemView, MarkdownView, Notice, Plugin, PluginSettingTab, Setting, TFile, WorkspaceLeaf, requestUrl, MarkdownRenderer, addIcon } from 'obsidian';
 import { PopupController, ButtonController, ExportController } from './tools';
 import { ensureThemeCssInjected, getJsMindThemeNameFromSetting, THEME_OPTIONS, ThemeName } from './themes';
 
@@ -9,6 +9,7 @@ declare global {
 }
 
 const VIEW_TYPE_MINDMAP = 'obsidian-jsmind-mindmap-view';
+const RIBBON_ICON_ID_MINDMAP = 'obsidian-jsmind-icon-mindmap';
 
 type HeadingNode = {
   id: string;
@@ -2073,6 +2074,37 @@ export default class MindmapPlugin extends Plugin {
   public collapsedByFile: Record<string, string[]> = {};
   public settings: { autoFollow: boolean; theme: ThemeName; enablePopup: boolean; includeContent?: boolean } = { autoFollow: true, theme: 'default', enablePopup: true, includeContent: false };
 
+  private async tryRegisterCustomRibbonIcon(): Promise<boolean> {
+    // Read SVG from the plugin folder under the current vault:
+    //   <vault>/.obsidian/plugins/obsidian-mindmap-jsmind/assets/icon.svg
+    try {
+      const iconPath = `${this.app.vault.configDir}/plugins/obsidian-mindmap-jsmind/assets/icon.svg`;
+      const svg = await (this.app.vault.adapter as any).read(iconPath);
+      if (typeof svg !== 'string') return false;
+      const s = svg.trim();
+      // Obsidian's addIcon expects the raw <svg>...</svg> element string (no XML header)
+      const start = s.indexOf('<svg');
+      const end = s.lastIndexOf('</svg>');
+      if (start < 0 || end < 0) return false;
+      let svgOnly = s.slice(start, end + '</svg>'.length);
+      // Normalize fixed colors to currentColor so the icon follows Obsidian theme tint.
+      // - Replace hex fills/strokes in inline attributes: fill="#RRGGBB", stroke="#RRGGBB"
+      // - Replace hex fills/strokes in <style> blocks: fill: #RRGGBB; stroke: #RRGGBB;
+      // Keep values like 'none' intact.
+      try {
+        svgOnly = svgOnly
+          .replace(/\bfill\s*=\s*["']#([0-9a-fA-F]{3,8})["']/g, 'fill="currentColor"')
+          .replace(/\bstroke\s*=\s*["']#([0-9a-fA-F]{3,8})["']/g, 'stroke="currentColor"')
+          .replace(/\bfill\s*:\s*#([0-9a-fA-F]{3,8})\b/g, 'fill: currentColor')
+          .replace(/\bstroke\s*:\s*#([0-9a-fA-F]{3,8})\b/g, 'stroke: currentColor');
+      } catch {}
+      addIcon(RIBBON_ICON_ID_MINDMAP, svgOnly);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   private async openMindmapForFile(file: TFile | null): Promise<void> {
     const targetFile = file ?? this.app.workspace.getActiveFile();
     if (!targetFile) {
@@ -2144,7 +2176,8 @@ export default class MindmapPlugin extends Plugin {
     );
 
     // Left ribbon entry to reopen/focus the mindmap view even after its tab was closed
-    this.addRibbonIcon('brain', 'Open Mindmap (jsMind)', async () => {
+    const iconId = (await this.tryRegisterCustomRibbonIcon()) ? RIBBON_ICON_ID_MINDMAP : 'git-branch';
+    this.addRibbonIcon(iconId, 'Open Mindmap (jsMind)', async () => {
       await this.openMindmapForFile(this.app.workspace.getActiveFile());
     });
 
